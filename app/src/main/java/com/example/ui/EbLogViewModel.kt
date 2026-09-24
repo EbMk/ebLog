@@ -2,13 +2,14 @@ package com.example.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.WorkspaceConfig
-import com.example.data.WorkspaceRepository
+import com.example.data.EbLogConfig
+import com.example.data.EbLogRepository
 import com.example.data.Airport
 import com.example.data.Aircraft
+import com.example.data.AircraftType
 import com.example.data.UserProfileSettings
 import com.example.data.PreviousExperience
-import com.example.data.WorkspaceNote
+import com.example.data.EbLogNote
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -27,7 +28,7 @@ import com.example.parseCsvLine
 import com.example.correctDateAnomaly
 import com.example.calculateTimeDiffInMinutes
 
-class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewModel() {
+class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
 
     val importProgress = MutableStateFlow<Float?>(null)
     val importProgressRowText = MutableStateFlow("")
@@ -35,6 +36,7 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
     val isSuccessStatus = MutableStateFlow(true)
     val showImportCompletedDialog = MutableStateFlow<String?>(null)
     val isImporting = MutableStateFlow(false)
+    val missingAircraftTypesToPrompt = MutableStateFlow<List<String>>(emptyList())
 
     var isCurrentlyViewingImportCsv = false
 
@@ -129,6 +131,7 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
                 val notesList = repository.notes.first()
                 val existingAirports = repository.airports.first()
                 val existingAircrafts = repository.aircrafts.first()
+                val existingAircraftTypes = repository.aircraftTypes.first()
 
                 val addedAirports = mutableListOf<String>()
                 val addedAircrafts = mutableListOf<String>()
@@ -297,6 +300,7 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
                             val alreadyExists = existingAircrafts.any { it.reg.equals(importedTail, ignoreCase = true) } || addedAircrafts.contains(importedTail)
                             if (!alreadyExists) {
                                 try {
+                                    val targetType = if (importedType.isNotBlank()) importedType else "Unknown"
                                     val guessedEngineType = when {
                                         importedType.contains("Q400", ignoreCase = true) || 
                                         importedType.contains("ATR", ignoreCase = true) || 
@@ -307,11 +311,19 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
                                     }
                                     val newAircraft = Aircraft(
                                         reg = importedTail,
-                                        type = if (importedType.isNotBlank()) importedType else "Unknown",
-                                        engineType = guessedEngineType
+                                        type = targetType
                                     )
                                     repository.insertAircraft(newAircraft)
                                     addedAircrafts.add(importedTail)
+
+                                    // Check if this type exists in the database
+                                    val hasType = existingAircraftTypes.any { it.code.equals(targetType, ignoreCase = true) }
+                                    if (!hasType && !targetType.equals("Unknown", ignoreCase = true)) {
+                                        val currentMissing = missingAircraftTypesToPrompt.value
+                                        if (!currentMissing.contains(targetType)) {
+                                            missingAircraftTypesToPrompt.value = currentMissing + targetType
+                                        }
+                                    }
                                 } catch (e: Exception) {
                                     // Ignore database insertion errors gracefully
                                 }
@@ -394,189 +406,7 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
         }
     }
 
-    init {
-        viewModelScope.launch {
-            try {
-                val currentList = repository.airports.first()
-                if (currentList.isEmpty()) {
-                    val defaultAirports = listOf(
-                        Airport(
-                            icao = "EGLL",
-                            iata = "LHR",
-                            name = "Heathrow Airport",
-                            city = "London",
-                            country = "United Kingdom",
-                            approaches = "ILS, RNAV, Visual, GLS",
-                            longestRunwayDesignator = "09L/27R",
-                            longestRunwayLength = "3902m (12802ft)",
-                            threats = "Wake turbulence, bird strikes, high air traffic density",
-                            timezone = "UTC+0",
-                            dstAssociated = "BST (UTC+1) from March to October",
-                            category = "Cat A"
-                        ),
-                        Airport(
-                            icao = "KJFK",
-                            iata = "JFK",
-                            name = "John F. Kennedy International Airport",
-                            city = "New York",
-                            country = "United States",
-                            approaches = "ILS, RNAV, VOR, Visual",
-                            longestRunwayDesignator = "13R/31L",
-                            longestRunwayLength = "4423m (14511ft)",
-                            threats = "Severe winter weather, high airport construction activity, bird hazards",
-                            timezone = "UTC-5",
-                            dstAssociated = "EDT (UTC-4) from March to November",
-                            category = "Cat A"
-                        ),
-                        Airport(
-                            icao = "OTHH",
-                            iata = "DOH",
-                            name = "Hamad International Airport",
-                            city = "Doha",
-                            country = "Qatar",
-                            approaches = "ILS, RNAV, Visual",
-                            longestRunwayDesignator = "16R/34L",
-                            longestRunwayLength = "4850m (15912ft)",
-                            threats = "Extremely high temperatures, occasional sandstorms and low visibility",
-                            timezone = "UTC+3",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat A"
-                        ),
-                        Airport(
-                            icao = "OMDB",
-                            iata = "DXB",
-                            name = "Dubai International Airport",
-                            city = "Dubai",
-                            country = "United Arab Emirates",
-                            approaches = "ILS, RNAV, Visual",
-                            longestRunwayDesignator = "12R/30L",
-                            longestRunwayLength = "4447m (14590ft)",
-                            threats = "Dense fog during winter mornings, high ground temperatures",
-                            timezone = "UTC+4",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat A"
-                        ),
-                        Airport(
-                            icao = "KLAX",
-                            iata = "LAX",
-                            name = "Los Angeles International Airport",
-                            city = "Los Angeles",
-                            country = "United States",
-                            approaches = "ILS, RNAV, Visual",
-                            longestRunwayDesignator = "07R/25L",
-                            longestRunwayLength = "3928m (12890ft)",
-                            threats = "Dense marine fog layers, complex runway/taxiway intersections",
-                            timezone = "UTC-8",
-                            dstAssociated = "PDT (UTC-7) from March to November",
-                            category = "Cat A"
-                        ),
-                        Airport(
-                            icao = "HAAB",
-                            iata = "ADD",
-                            name = "Addis Ababa Bole International Airport",
-                            city = "Addis Ababa",
-                            country = "Ethiopia",
-                            approaches = "ILS, RNAV, VOR, Visual",
-                            longestRunwayDesignator = "07R/25L",
-                            longestRunwayLength = "3800m (12467ft)",
-                            threats = "High elevation (7,625 ft), hot and high performance limitations, heavy bird activity during migration season",
-                            timezone = "UTC+3",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat B"
-                        ),
-                        Airport(
-                            icao = "HABA",
-                            iata = "BJR",
-                            name = "Bahir Dar Ginbot 20 Airport",
-                            city = "Bahir Dar",
-                            country = "Ethiopia",
-                            approaches = "VOR, NDB, Visual",
-                            longestRunwayDesignator = "04/22",
-                            longestRunwayLength = "3000m (9843ft)",
-                            threats = "High elevation (6,170 ft), bird hazards near Lake Tana, limited ground-based navigation aids",
-                            timezone = "UTC+3",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat B"
-                        ),
-                        Airport(
-                            icao = "HAMK",
-                            iata = "MQX",
-                            name = "Alula Aba Nega Airport",
-                            city = "Mekele",
-                            country = "Ethiopia",
-                            approaches = "VOR, NDB, Visual",
-                            longestRunwayDesignator = "11/29",
-                            longestRunwayLength = "3000m (9843ft)",
-                            threats = "Mountainous surrounding terrain, high altitude (7,411 ft), seasonal strong winds",
-                            timezone = "UTC+3",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat B"
-                        ),
-                        Airport(
-                            icao = "HAGR",
-                            iata = "GDR",
-                            name = "Atse Tewodros Airport",
-                            city = "Gondar",
-                            country = "Ethiopia",
-                            approaches = "VOR, Visual",
-                            longestRunwayDesignator = "17/35",
-                            longestRunwayLength = "2700m (8858ft)",
-                            threats = "Highly mountainous terrain, high elevation (6,542 ft), short runway, windshear on final",
-                            timezone = "UTC+3",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat C"
-                        ),
-                        Airport(
-                            icao = "HADR",
-                            iata = "DMT",
-                            name = "Dembidolo Airport",
-                            city = "Dembidolo",
-                            country = "Ethiopia",
-                            approaches = "Visual Only",
-                            longestRunwayDesignator = "10/28",
-                            longestRunwayLength = "1800m (5905ft)",
-                            threats = "Short runway, unpaved gravel surface, high surrounding terrain, no instrument approaches",
-                            timezone = "UTC+3",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat C"
-                        ),
-                        Airport(
-                            icao = "HABD",
-                            iata = "DIR",
-                            name = "Aba Tenna Dejazmach Yilma International Airport",
-                            city = "Dire Dawa",
-                            country = "Ethiopia",
-                            approaches = "ILS, VOR, Visual",
-                            longestRunwayDesignator = "15/33",
-                            longestRunwayLength = "2700m (8858ft)",
-                            threats = "Rising terrain on final approach, high ground temperatures affecting performance",
-                            timezone = "UTC+3",
-                            dstAssociated = "None (No Daylight Saving Time)",
-                            category = "Cat B"
-                        )
-                    )
-                    defaultAirports.forEach { repository.insertAirport(it) }
-                }
-
-                val currentAircrafts = repository.aircrafts.first()
-                if (currentAircrafts.isEmpty()) {
-                    val defaultAircrafts = listOf(
-                        Aircraft(reg = "ET-AOU", type = "B787-8", engineType = "Jet"),
-                        Aircraft(reg = "ET-AYT", type = "B787-9", engineType = "Jet"),
-                        Aircraft(reg = "ET-ATY", type = "A350-900", engineType = "Jet"),
-                        Aircraft(reg = "ET-APX", type = "B777-300ER", engineType = "Jet"),
-                        Aircraft(reg = "ET-AVL", type = "B737 MAX 8", engineType = "Jet"),
-                        Aircraft(reg = "ET-ALN", type = "Q400", engineType = "Turboprop")
-                    )
-                    defaultAircrafts.forEach { repository.insertAircraft(it) }
-                }
-            } catch (e: Exception) {
-                // Handle or ignore gracefully
-            }
-        }
-    }
-
-    val config: StateFlow<WorkspaceConfig?> = repository.config
+    val config: StateFlow<EbLogConfig?> = repository.config
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -590,7 +420,7 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
             initialValue = emptyList()
         )
 
-    private var cachedNotes: List<WorkspaceNote> = emptyList()
+    private var cachedNotes: List<EbLogNote> = emptyList()
     val notes = repository.notes
         .combine(isImporting) { list, importing ->
             if (!importing) {
@@ -645,6 +475,13 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
             initialValue = emptyList()
         )
 
+    val aircraftTypes = repository.aircraftTypes
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
     val userProfileSettings = repository.userProfileSettings
         .stateIn(
             scope = viewModelScope,
@@ -686,7 +523,7 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
     fun saveConfig(name: String, industry: String, teamSize: String, enabledTools: String, isCompleted: Boolean) {
         viewModelScope.launch {
             repository.saveConfig(
-                WorkspaceConfig(
+                EbLogConfig(
                     name = name,
                     industry = industry,
                     teamSize = teamSize,
@@ -762,6 +599,77 @@ class WorkspaceViewModel(private val repository: WorkspaceRepository) : ViewMode
     fun deleteAircraft(reg: String) {
         viewModelScope.launch {
             repository.deleteAircraft(reg)
+        }
+    }
+
+    fun insertAircraftType(aircraftType: AircraftType) {
+        viewModelScope.launch {
+            repository.insertAircraftType(aircraftType)
+        }
+    }
+
+    fun deleteAircraftType(code: String) {
+        viewModelScope.launch {
+            repository.deleteAircraftType(code)
+        }
+    }
+
+    fun remapAircraftType(oldTypeCode: String, newTypeCode: String) {
+        viewModelScope.launch {
+            try {
+                val allNotes = repository.notes.first()
+                allNotes.forEach { note ->
+                    if (note.content.startsWith("FLIGHTLOG::")) {
+                        val jsonStr = note.content.substring("FLIGHTLOG::".length)
+                        val json = org.json.JSONObject(jsonStr)
+                        val typeCode = json.optString("aircraftType", "")
+                        if (typeCode.equals(oldTypeCode, ignoreCase = true)) {
+                            json.put("aircraftType", newTypeCode)
+                            repository.updateNote(note.id, "FLIGHTLOG::$json")
+                        }
+                    }
+                }
+                
+                // Also update any Aircraft in the database that has this type code!
+                val aircrafts = repository.aircrafts.first()
+                aircrafts.forEach { ac ->
+                    if (ac.type.equals(oldTypeCode, ignoreCase = true)) {
+                        repository.insertAircraft(ac.copy(type = newTypeCode))
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun clearFlightLogs() {
+        viewModelScope.launch {
+            repository.clearFlightLogs()
+        }
+    }
+
+    fun clearAirports() {
+        viewModelScope.launch {
+            repository.clearAirports()
+        }
+    }
+
+    fun clearAircrafts() {
+        viewModelScope.launch {
+            repository.clearAircrafts()
+        }
+    }
+
+    fun clearAircraftTypes() {
+        viewModelScope.launch {
+            repository.clearAircraftTypes()
+        }
+    }
+
+    fun clearSettings() {
+        viewModelScope.launch {
+            repository.clearSettings()
         }
     }
 

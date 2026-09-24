@@ -3,24 +3,29 @@ package com.example.data
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 // --- Entities ---
 
-@Entity(tableName = "workspace_notes")
-data class WorkspaceNote(
+@Entity(
+    tableName = "eblog_notes",
+    indices = [Index(value = ["timestamp"])]
+)
+data class EbLogNote(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val content: String,
     val timestamp: Long = System.currentTimeMillis()
 )
 
 // Simple stub models for compatibility (not database entities)
-data class WorkspaceConfig(
+data class EbLogConfig(
     val id: Int = 0,
     val name: String = "",
     val industry: String = "",
@@ -29,7 +34,7 @@ data class WorkspaceConfig(
     val isOnboardingCompleted: Boolean = false
 )
 
-data class WorkspaceTask(
+data class EbLogTask(
     val id: Int = 0,
     val title: String = "",
     val isCompleted: Boolean = false,
@@ -43,7 +48,10 @@ data class TeamPost(
     val timestamp: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "airports")
+@Entity(
+    tableName = "airports",
+    indices = [Index(value = ["icao"]), Index(value = ["country"]), Index(value = ["city"])]
+)
 data class Airport(
     @PrimaryKey val icao: String,
     val iata: String,
@@ -59,17 +67,31 @@ data class Airport(
     val category: String = "Cat A"
 )
 
-@Entity(tableName = "aircrafts")
+@Entity(
+    tableName = "aircrafts",
+    indices = [Index(value = ["reg"]), Index(value = ["type"])]
+)
 data class Aircraft(
     @PrimaryKey val reg: String,
-    val type: String,
-    val engineType: String
+    val type: String
+)
+
+@Entity(
+    tableName = "aircraft_types",
+    indices = [Index(value = ["code"])]
+)
+data class AircraftType(
+    @PrimaryKey val code: String,
+    val name: String,
+    val manufacturer: String,
+    val category: String = "MEL",
+    val engineType: String = "Turbo Jet"
 )
 
 @Entity(tableName = "user_profile_settings")
 data class UserProfileSettings(
     @PrimaryKey val id: Int = 0,
-    val fullName: String = "Ian Bradley",
+    val fullName: String = "Pilot Pilot",
     val role: String = "Captain",
     val airline: String = "Ethiopian Airlines",
     val experience: String = "5,200 hrs Total Time, B787-8/9 & A350-900 Rated",
@@ -179,30 +201,46 @@ interface AirportDao {
 }
 
 @Dao
-interface NoteDao {
-    @Query("SELECT * FROM workspace_notes ORDER BY timestamp DESC")
-    fun getAllNotes(): Flow<List<WorkspaceNote>>
+interface AircraftTypeDao {
+    @Query("SELECT * FROM aircraft_types ORDER BY code ASC")
+    fun getAllAircraftTypes(): Flow<List<AircraftType>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertNote(note: WorkspaceNote)
+    suspend fun insertAircraftType(aircraftType: AircraftType)
 
-    @Query("DELETE FROM workspace_notes WHERE id = :id")
+    @Query("DELETE FROM aircraft_types WHERE code = :code")
+    suspend fun deleteAircraftType(code: String)
+
+    @Query("DELETE FROM aircraft_types")
+    suspend fun deleteAllAircraftTypes()
+}
+
+@Dao
+interface NoteDao {
+    @Query("SELECT * FROM eblog_notes ORDER BY timestamp DESC")
+    fun getAllNotes(): Flow<List<EbLogNote>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertNote(note: EbLogNote)
+
+    @Query("DELETE FROM eblog_notes WHERE id = :id")
     suspend fun deleteNote(id: Int)
 
-    @Query("DELETE FROM workspace_notes")
+    @Query("DELETE FROM eblog_notes")
     suspend fun deleteAllNotes()
 }
 
 // --- Database ---
 
 @Database(
-    entities = [WorkspaceNote::class, Airport::class, Aircraft::class, UserProfileSettings::class],
-    version = 6,
+    entities = [EbLogNote::class, Airport::class, Aircraft::class, AircraftType::class, UserProfileSettings::class],
+    version = 12,
     exportSchema = false
 )
-abstract class WorkspaceDatabase : RoomDatabase() {
+abstract class EbLogDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun airportDao(): AirportDao
     abstract fun aircraftDao(): AircraftDao
+    abstract fun aircraftTypeDao(): AircraftTypeDao
     abstract fun userProfileSettingsDao(): UserProfileSettingsDao
 }
