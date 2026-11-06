@@ -41,6 +41,7 @@ class EbLogRepository(private val db: EbLogDatabase) {
             obj.put("aircraftType", exp.aircraftType)
             obj.put("pilotRole", exp.pilotRole)
             obj.put("totalHours", exp.totalHours)
+            obj.put("isSim", exp.isSim)
             array.put(obj)
         }
         
@@ -60,6 +61,7 @@ class EbLogRepository(private val db: EbLogDatabase) {
             obj.put("aircraftType", exp.aircraftType)
             obj.put("pilotRole", exp.pilotRole)
             obj.put("totalHours", exp.totalHours)
+            obj.put("isSim", exp.isSim)
             array.put(obj)
         }
         
@@ -169,5 +171,41 @@ class EbLogRepository(private val db: EbLogDatabase) {
             pilotLimitsJson = "[]"
         )
         db.userProfileSettingsDao().saveUserProfileSettings(clearedSettings)
+    }
+
+    suspend fun getAllNotesList(): List<EbLogNote> = withContext(Dispatchers.IO) {
+        db.noteDao().getAllNotesList()
+    }
+
+    suspend fun getAllAirportsList(): List<Airport> = withContext(Dispatchers.IO) {
+        db.airportDao().getAllAirportsList()
+    }
+
+    suspend fun getAllAircraftsList(): List<Aircraft> = withContext(Dispatchers.IO) {
+        db.aircraftDao().getAllAircraftsList()
+    }
+
+    suspend fun getAllAircraftTypesList(): List<AircraftType> = withContext(Dispatchers.IO) {
+        db.aircraftTypeDao().getAllAircraftTypesList()
+    }
+
+    suspend fun insertNotes(notes: List<EbLogNote>) = withContext(Dispatchers.IO) {
+        db.noteDao().insertNotes(notes)
+    }
+
+    suspend fun insertAirports(airports: List<Airport>) = withContext(Dispatchers.IO) {
+        db.airportDao().insertAirports(airports)
+    }
+
+    suspend fun insertAircrafts(aircrafts: List<Aircraft>) = withContext(Dispatchers.IO) {
+        db.aircraftDao().insertAircrafts(aircrafts)
+    }
+
+    suspend fun insertAircraftTypes(types: List<AircraftType>) = withContext(Dispatchers.IO) {
+        db.aircraftTypeDao().insertAircraftTypes(types)
+    }
+
+    suspend fun getUserProfileSettingsValue(): UserProfileSettings? = withContext(Dispatchers.IO) {
+        db.userProfileSettingsDao().getUserProfileSettingsValue()
     }
 }

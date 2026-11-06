@@ -27,8 +27,26 @@ import java.util.Date
 import com.example.parseCsvLine
 import com.example.correctDateAnomaly
 import com.example.calculateTimeDiffInMinutes
+import com.example.normalizeTimeString
+import com.example.normalizeBlockHours
+import com.example.parseBlockMinutesFromLog
+import com.example.formatMinutesToHoursClean
+import com.example.extractDateFromDateTime
 
-class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
+class EbLogViewModel(val repository: EbLogRepository) : ViewModel() {
+
+    val uiScale = MutableStateFlow(0.85f)
+
+    fun initUiScale(context: Context) {
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        uiScale.value = prefs.getFloat("app_ui_scale", 0.85f)
+    }
+
+    fun setUiScale(context: Context, scale: Float) {
+        uiScale.value = scale
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putFloat("app_ui_scale", scale).apply()
+    }
 
     val importProgress = MutableStateFlow<Float?>(null)
     val importProgressRowText = MutableStateFlow("")
@@ -67,7 +85,12 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
                 }
 
                 val firstLine = lines.first()
-                val headers = parseCsvLine(firstLine)
+                val csvDelimiter = when {
+                    firstLine.count { it == ';' } > firstLine.count { it == ',' } -> ';'
+                    firstLine.count { it == '\t' } > firstLine.count { it == ',' } -> '\t'
+                    else -> ','
+                }
+                val headers = parseCsvLine(firstLine, csvDelimiter)
 
                 val hasHeader = headers.any { h ->
                     val cleanH = h.lowercase()
@@ -79,33 +102,151 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
 
                 if (hasHeader) {
                     headers.forEachIndexed { index, header ->
-                        val hClean = header.lowercase().trim()
+                        val rawClean = header.trim().replace("\"", "").replace("'", "")
+                        val hClean = rawClean.lowercase()
+                        // Strip parenthetical modifiers and common suffixes like (utc), (z), (gmt), (time), (act), etc.
+                        val hNorm = hClean
+                            .replace("\\s*\\((?:utc|z|local|gmt|time|act|est|sched|actual|scheduled)\\)".toRegex(), "")
+                            .replace("\\b(?:utc|z|local|gmt|act|est|sched|actual|scheduled)\\b".toRegex(), "")
+                            .replace("[-_./]".toRegex(), " ")
+                            .replace("\\s+".toRegex(), " ")
+                            .trim()
+
                         val mappedKey = when {
-                            hClean.contains("flight number") || hClean.contains("flightnum") || hClean == "flight" || hClean.contains("flight_num") || hClean.contains("flightnumber") -> "flightNum"
-                            hClean == "date" -> "date"
-                            hClean.contains("registration") || hClean.contains("tailnumber") || hClean == "tail" || hClean.contains("tail_number") || hClean == "reg" || hClean.contains("reg") -> "tailNumber"
-                            hClean.contains("aircrafttype") || hClean.contains("aircraft type") || hClean.contains("aircraft_type") || hClean.contains("aircraft") || hClean == "type" -> "aircraftType"
-                            hClean.contains("crew size") || hClean.contains("crew count") || hClean.contains("crew number") || hClean.contains("number of crew") || hClean.contains("crew_size") || hClean.contains("crew_count") || hClean.contains("crew_number") || hClean == "crewcount" || hClean == "crewsize" || hClean == "crewnumber" -> "crewCount"
-                            hClean == "crew" || hClean.contains("copilot") || hClean == "crews" -> "crew"
-                            hClean == "employer" || hClean == "company" || hClean == "operator" || hClean == "airlines" -> "employer"
-                            hClean.contains("fromcode") || hClean == "from" || hClean.contains("origin") || hClean == "dep" || hClean == "dept" -> "fromCode"
-                            hClean.contains("tocode") || hClean == "to" || hClean.contains("dest") || hClean.contains("destination") || hClean == "arr" -> "toCode"
-                            hClean.contains("outtime") || hClean.contains("out_time") || hClean.contains("block out time") || hClean.contains("blockout") || hClean.contains("block_out") || hClean == "out" -> "outTime"
-                            hClean.contains("offtime") || hClean == "off" || hClean.contains("takeoff") -> "offTime"
-                            hClean.contains("ontime") || hClean == "on" || hClean.contains("landing") -> "onTime"
-                            hClean.contains("intime") || hClean.contains("in_time") || hClean.contains("block in time") || hClean.contains("blockin") || hClean.contains("block_in") || hClean == "in" -> "inTime"
-                            hClean.contains("pffrom") || hClean == "pf_from" -> "pfFrom"
-                            hClean.contains("pfto") || hClean == "pf_to" -> "pfTo"
-                            hClean.contains("day takeoff") || hClean.contains("takeoffday") || hClean.contains("takeoff_day") || hClean.contains("day_takeoff") -> "takeoffDay"
-                            hClean.contains("night takeoff") || hClean.contains("takeoffnight") || hClean.contains("takeoff_night") || hClean.contains("night_takeoff") -> "takeoffNight"
-                            hClean.contains("day landing") || hClean.contains("landingday") || hClean.contains("landing_day") || hClean.contains("day_landing") -> "landingDay"
-                            hClean.contains("night landing") || hClean.contains("landingnight") || hClean.contains("landing_night") || hClean.contains("night_landing") -> "landingNight"
-                            hClean.contains("approachtype") || hClean == "approach" || hClean.contains("approach_type") -> "approachType"
-                            hClean.contains("crew role") || hClean.contains("pilot role") || hClean.contains("pilotrole") || hClean.contains("pilot_role") || hClean == "role" || hClean.contains("role") -> "pilotRole"
-                            hClean.contains("flightrules") || hClean == "rules" || hClean.contains("flight_rules") -> "flightRules"
-                            hClean == "remarks" || hClean == "remark" || hClean.contains("comment") || hClean == "comments" -> "remarks"
-                            hClean.contains("night hours") || hClean.contains("night_hours") || hClean.contains("night time") || hClean.contains("nighttime") || hClean == "night" -> "nightTime"
-                            hClean.contains("block hours") || hClean.contains("block_hours") || hClean.contains("pay hours") || hClean.contains("pay_hours") || hClean.contains("total block") || hClean.contains("blocktime") || hClean.contains("block time") -> "blockHours"
+                            // 1. Takeoff & Landing COUNTS (Must explicitly match count qualifiers or plurals)
+                            // Night Takeoff count
+                            hNorm.contains("night") && (hNorm.contains("takeoff") || hNorm.contains("take off") || hNorm.contains("t o") || hNorm.contains("to")) -> "takeoffNight"
+
+                            // Day Takeoff count
+                            hNorm.contains("day") && (hNorm.contains("takeoff") || hNorm.contains("take off") || hNorm.contains("t o") || hNorm.contains("to")) -> "takeoffDay"
+
+                            // Night Landing count
+                            hNorm.contains("night") && (hNorm.contains("landing") || hNorm.contains("ldg") || hNorm.contains("land")) -> "landingNight"
+
+                            // Day Landing count
+                            hNorm.contains("day") && (hNorm.contains("landing") || hNorm.contains("ldg") || hNorm.contains("land")) -> "landingDay"
+
+                            // Generic Takeoff count (plural or specific count keywords, no 'time')
+                            (hNorm == "takeoffs" || hNorm.contains("takeoff count") || hNorm.contains("takeoffs count") ||
+                             hNorm.contains("num takeoff") || hNorm.contains("number of takeoff") || hNorm.contains("t o count")) && !hNorm.contains("time") -> "takeoffDay"
+
+                            // Generic Landing count (plural or specific count keywords, no 'time')
+                            (hNorm == "landings" || hNorm.contains("landing count") || hNorm.contains("landings count") ||
+                             hNorm.contains("num landing") || hNorm.contains("number of landing") || hNorm.contains("ldg count")) && !hNorm.contains("time") -> "landingDay"
+
+                            // 2. Flight Times: Off Time, On Time, Out Time, In Time
+                            // OFF Time (Flight Off / Wheels Off / Wheels Up / Takeoff Time / Airborne Time)
+                            hNorm.contains("flight off") || hNorm.contains("flightoff") ||
+                            hNorm.contains("off time") || hNorm.contains("offtime") || hNorm.contains("time off") ||
+                            hNorm.contains("wheels off") || hNorm.contains("wheelsoff") ||
+                            hNorm.contains("wheels up") || hNorm.contains("wheelsup") ||
+                            hNorm.contains("takeoff time") || hNorm.contains("take off time") || hNorm.contains("time takeoff") ||
+                            hNorm.contains("t o time") || hNorm.contains("t/o time") || hNorm.contains("to time") ||
+                            hNorm.contains("airborne time") || hNorm.contains("dep airborne") || hNorm.contains("departure airborne") ||
+                            hNorm.contains("atot") || hNorm.contains("etot") || hNorm.contains("dep off") || hNorm.contains("dep takeoff") ||
+                            hNorm == "off" || hNorm == "takeoff" || hNorm == "take off" || hNorm == "take-off" ||
+                            hNorm == "t o" || hNorm == "t/o" || hNorm == "airborne" || hNorm == "tkoff" -> "offTime"
+
+                            // ON Time (Flight On / Wheels On / Wheels Down / Landing Time / Touchdown Time)
+                            hNorm.contains("landing time") || hNorm.contains("landingtime") || hNorm.contains("time landing") ||
+                            hNorm.contains("flight on") || hNorm.contains("flighton") ||
+                            hNorm.contains("flight landing") || hNorm.contains("flight land") ||
+                            hNorm.contains("on time") || hNorm.contains("ontime") || hNorm.contains("time on") ||
+                            hNorm.contains("wheels on") || hNorm.contains("wheelson") ||
+                            hNorm.contains("wheels down") || hNorm.contains("wheelsdown") ||
+                            hNorm.contains("touchdown time") || hNorm.contains("touch down time") || hNorm.contains("time touchdown") ||
+                            hNorm.contains("touchdown") || hNorm.contains("touch down") ||
+                            hNorm.contains("ldg time") || hNorm.contains("land time") ||
+                            hNorm.contains("arr airborne") || hNorm.contains("arr on") || hNorm.contains("arr landing") || hNorm.contains("arr touchdown") ||
+                            hNorm.contains("aldt") || hNorm.contains("eldt") ||
+                            hNorm == "on" || hNorm == "landing" || hNorm == "ldg" || hNorm == "land" -> "onTime"
+
+                            // OUT Time (Block Out / Chocks Off / Off Block / Gate Out)
+                            hNorm.contains("out time") || hNorm.contains("outtime") || hNorm.contains("time out") ||
+                            hNorm.contains("block out") || hNorm.contains("blockout") ||
+                            hNorm.contains("chocks off") || hNorm.contains("chock off") ||
+                            hNorm.contains("off block") || hNorm.contains("offblock") ||
+                            hNorm.contains("gate out") ||
+                            hNorm.contains("aobt") || hNorm.contains("eobt") || hNorm.contains("sobt") ||
+                            hNorm == "out" || (hNorm.contains("dep") && hNorm.contains("time") && !hNorm.contains("airborne")) -> "outTime"
+
+                            // IN Time (Block In / Chocks On / On Block / Gate In)
+                            hNorm.contains("in time") || hNorm.contains("intime") || hNorm.contains("time in") ||
+                            hNorm.contains("block in") || hNorm.contains("blockin") ||
+                            hNorm.contains("chocks on") || hNorm.contains("chock on") ||
+                            hNorm.contains("on block") || hNorm.contains("onblock") ||
+                            hNorm.contains("gate in") ||
+                            hNorm.contains("aibt") || hNorm.contains("sibt") || hNorm.contains("eibt") ||
+                            hNorm == "in" || (hNorm.contains("arr") && hNorm.contains("time") && !hNorm.contains("airborne") && !hNorm.contains("touchdown")) -> "inTime"
+
+                            // Flight number
+                            hNorm.contains("flight number") || hNorm.contains("flightnum") || hNorm == "flight" ||
+                            hNorm.contains("flight num") || hNorm.contains("flightnumber") || hNorm == "flt" ||
+                            hNorm.contains("flt num") || hNorm.contains("flt#") ||
+                            hNorm.contains("flight#") || hNorm == "trip" -> "flightNum"
+
+                            // Date
+                            hNorm == "date" || hNorm.contains("flight date") ||
+                            hNorm.contains("flt date") || hNorm.contains("utc date") -> "date"
+
+                            // Tail / Registration
+                            hNorm.contains("registration") || hNorm.contains("tailnumber") || hNorm == "tail" ||
+                            hNorm.contains("tail number") || hNorm == "reg" || hNorm.contains("reg num") ||
+                            hNorm.contains("aircraft reg") || hNorm.contains("ac reg") || hNorm.contains("tail#") -> "tailNumber"
+
+                            // Aircraft Type
+                            hNorm.contains("aircrafttype") || hNorm.contains("aircraft type") ||
+                            hNorm.contains("ac type") || hNorm.contains("actype") || hNorm == "type" || hNorm == "model" ||
+                            hNorm.contains("aircraft model") -> "aircraftType"
+
+                            // Crew count & crew
+                            hNorm.contains("crew size") || hNorm.contains("crew count") || hNorm.contains("crew number") ||
+                            hNorm.contains("number of crew") || hNorm == "crewcount" || hNorm == "crewsize" || hNorm == "crewnumber" -> "crewCount"
+
+                            hNorm == "crew" || hNorm.contains("copilot") || hNorm.contains("co pilot") || hNorm == "crews" ||
+                            hNorm.contains("crew name") || hNorm.contains("crew members") ||
+                            hNorm.contains("pic sic") || hNorm == "sic" -> "crew"
+
+                            // Origin airport
+                            hNorm.contains("fromcode") || hNorm.contains("from code") || hNorm == "from" || hNorm.contains("origin") ||
+                            hNorm == "dep" || hNorm == "dept" || hNorm.contains("departure airport") || hNorm.contains("dep airport") ||
+                            hNorm.contains("origin airport") || hNorm.contains("orig") -> "fromCode"
+
+                            // Destination airport
+                            hNorm.contains("tocode") || hNorm.contains("to code") || hNorm == "to" || hNorm.contains("dest") ||
+                            hNorm.contains("destination") || hNorm == "arr" || hNorm.contains("arrival airport") ||
+                            hNorm.contains("arr airport") || hNorm.contains("destination airport") -> "toCode"
+
+                            // PF Dep / PF Arr
+                            hNorm.contains("pffrom") || hNorm.contains("pf from") || hNorm.contains("pf dep") || hNorm.contains("pilot flying dep") -> "pfFrom"
+                            hNorm.contains("pfto") || hNorm.contains("pf to") || hNorm.contains("pf arr") || hNorm.contains("pilot flying arr") -> "pfTo"
+
+                            // Approach type
+                            hNorm.contains("approachtype") || hNorm.contains("approach type") || hNorm == "approach" -> "approachType"
+
+                            // Pilot role
+                            hNorm.contains("crew role") || hNorm.contains("pilot role") || hNorm.contains("pilotrole") ||
+                            hNorm == "role" || hNorm.contains("function") || hNorm.contains("capacity") -> "pilotRole"
+
+                            // Flight rules
+                            hNorm.contains("flightrules") || hNorm.contains("flight rules") || hNorm == "rules" ||
+                            hNorm.contains("ifr") || hNorm.contains("vfr") -> "flightRules"
+
+                            // Remarks
+                            hNorm == "remarks" || hNorm == "remark" || hNorm.contains("comment") ||
+                            hNorm.contains("notes") || hNorm == "note" -> "remarks"
+
+                            // Night hours
+                            hNorm.contains("night hours") || hNorm.contains("nighthours") ||
+                            hNorm.contains("night time") || hNorm.contains("nighttime") || hNorm == "night" -> "nightTime"
+
+                            // Block hours / Total time
+                            hNorm.contains("block hours") || hNorm.contains("blockhours") ||
+                            hNorm.contains("block time") || hNorm.contains("blocktime") ||
+                            hNorm.contains("total block") || hNorm.contains("total time") ||
+                            hNorm.contains("total hours") || hNorm.contains("pay hours") ||
+                            hNorm == "total" || hNorm == "hours" -> "blockHours"
+
                             else -> null
                         }
                         if (mappedKey != null) {
@@ -114,7 +255,7 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
                     }
                 } else {
                     val defaultOrder = listOf(
-                        "flightNum", "date", "tailNumber", "aircraftType", "crew", "employer",
+                        "flightNum", "date", "tailNumber", "aircraftType", "crew",
                         "fromCode", "toCode", "outTime", "offTime", "onTime", "inTime",
                         "pfFrom", "pfTo", "takeoffDay", "takeoffNight", "landingDay", "landingNight",
                         "approachType", "pilotRole", "flightRules", "remarks", "blockHours", "nightTime"
@@ -146,7 +287,7 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
                     kotlinx.coroutines.delay(6)
 
                     try {
-                        val rowValues = parseCsvLine(lineText)
+                        val rowValues = parseCsvLine(lineText, csvDelimiter)
                         if (rowValues.isEmpty()) continue
 
                         val json = org.json.JSONObject()
@@ -155,7 +296,6 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
                         json.put("tailNumber", "")
                         json.put("aircraftType", "")
                         json.put("crew", "")
-                        json.put("employer", "EM")
                         json.put("fromCode", "")
                         json.put("toCode", "")
                         json.put("outTime", "")
@@ -180,22 +320,72 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
 
                         rowValues.forEachIndexed { colIndex, valStr ->
                             val key = headerMap[colIndex]
+                            val cleanVal = valStr.trim().replace("\"", "").replace("'", "")
+                            if (cleanVal.isEmpty()) return@forEachIndexed
+
                             if (key != null) {
                                 when (key) {
-                                    "pfFrom", "pfTo" -> {
-                                        val boolVal = valStr.lowercase() == "true" || valStr == "1" || valStr.lowercase() == "yes"
-                                        json.put(key, boolVal)
+                                    "outTime", "inTime" -> {
+                                        val normalized = normalizeTimeString(cleanVal)
+                                        if (normalized.isNotBlank()) {
+                                            json.put(key, normalized)
+                                        }
+                                        val extractedDate = extractDateFromDateTime(cleanVal)
+                                        if (extractedDate != null && (!json.has("date") || json.optString("date", "").isBlank())) {
+                                            json.put("date", extractedDate)
+                                        }
+                                    }
+                                    "offTime", "onTime" -> {
+                                        // Disambiguate: Is this value a takeoff/landing count (e.g. "1", "0", "2")?
+                                        val asInt = cleanVal.toIntOrNull()
+                                        if (asInt != null && asInt in 0..10 && !cleanVal.contains(":") && !cleanVal.contains(".")) {
+                                            val countKey = if (key == "offTime") "takeoffDay" else "landingDay"
+                                            json.put(countKey, asInt)
+                                        } else {
+                                            val normalized = normalizeTimeString(cleanVal)
+                                            if (normalized.isNotBlank()) {
+                                                json.put(key, normalized)
+                                            }
+                                            val extractedDate = extractDateFromDateTime(cleanVal)
+                                            if (extractedDate != null && (!json.has("date") || json.optString("date", "").isBlank())) {
+                                                json.put("date", extractedDate)
+                                            }
+                                        }
                                     }
                                     "takeoffDay", "takeoffNight", "landingDay", "landingNight" -> {
-                                        val intVal = valStr.toIntOrNull() ?: 0
-                                        json.put(key, intVal)
+                                        // Disambiguate: If value contains ":" or "." or is a 4-digit time, it's actually a time string!
+                                        if (cleanVal.contains(":") || (cleanVal.contains(".") && !cleanVal.endsWith(".0")) ||
+                                            (cleanVal.length == 4 && cleanVal.all { it.isDigit() } && (cleanVal.substring(0, 2).toIntOrNull() ?: 99) in 0..23)) {
+                                            val normalized = normalizeTimeString(cleanVal)
+                                            if (normalized.isNotBlank()) {
+                                                val targetKey = if (key.startsWith("takeoff")) "offTime" else "onTime"
+                                                if (json.optString(targetKey, "").isBlank()) {
+                                                    json.put(targetKey, normalized)
+                                                }
+                                            }
+                                        } else {
+                                            val intVal = cleanVal.toDoubleOrNull()?.toInt() ?: cleanVal.toIntOrNull() ?: 0
+                                            json.put(key, intVal)
+                                        }
+                                    }
+                                    "nightTime" -> {
+                                        val normalized = normalizeTimeString(cleanVal)
+                                        json.put(key, normalized)
+                                    }
+                                    "blockHours" -> {
+                                        val normalized = normalizeBlockHours(cleanVal)
+                                        json.put(key, normalized)
+                                    }
+                                    "pfFrom", "pfTo" -> {
+                                        val cLower = cleanVal.lowercase()
+                                        val boolVal = cLower == "true" || cLower == "1" || cLower == "yes" || cLower == "y" || cLower == "pf"
+                                        json.put(key, boolVal)
                                     }
                                     "date" -> {
-                                        val corrected = correctDateAnomaly(valStr)
+                                        val corrected = correctDateAnomaly(cleanVal)
                                         json.put(key, corrected)
                                     }
                                     "crew" -> {
-                                        val cleanVal = valStr.trim()
                                         val intVal = cleanVal.toIntOrNull()
                                         if (intVal != null && intVal > 0) {
                                             importedCrewCount = intVal
@@ -204,13 +394,13 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
                                         }
                                     }
                                     "crewCount" -> {
-                                        val intVal = valStr.trim().toIntOrNull()
+                                        val intVal = cleanVal.toIntOrNull()
                                         if (intVal != null && intVal > 0) {
                                             importedCrewCount = intVal
                                         }
                                     }
                                     else -> {
-                                        json.put(key, valStr)
+                                        json.put(key, cleanVal)
                                     }
                                 }
                             }
@@ -247,16 +437,43 @@ class EbLogViewModel(private val repository: EbLogRepository) : ViewModel() {
                         }
 
                         val outT = json.optString("outTime", "")
+                        val offT = json.optString("offTime", "")
+                        val onT = json.optString("onTime", "")
                         val inT = json.optString("inTime", "")
-                        val calcMin = calculateTimeDiffInMinutes(outT, inT)
-                        if (calcMin != null) {
-                            val calcHours = calcMin / 60.0
-                            val calcHoursRounded = Math.round(calcHours * 100.0) / 100.0
-                            val csvBlockHoursStr = json.optString("blockHours", "").trim()
-                            val csvBlockHours = csvBlockHoursStr.toDoubleOrNull()
-                            if (csvBlockHours == null || Math.abs(csvBlockHours - calcHoursRounded) > 0.02) {
-                                json.put("blockHours", String.format(Locale.US, "%.2f", calcHoursRounded))
+
+                        // Ensure default Takeoff & Landing counts if not specified in CSV
+                        val toDay = json.optInt("takeoffDay", 0)
+                        val toNight = json.optInt("takeoffNight", 0)
+                        val ldgDay = json.optInt("landingDay", 0)
+                        val ldgNight = json.optInt("landingNight", 0)
+                        val pfDep = json.optBoolean("pfFrom", true)
+                        val pfArr = json.optBoolean("pfTo", true)
+
+                        if (toDay == 0 && toNight == 0 && pfDep) {
+                            json.put("takeoffDay", 1)
+                        }
+                        if (ldgDay == 0 && ldgNight == 0 && pfArr) {
+                            json.put("landingDay", 1)
+                        }
+
+                        val calcBlockMin = calculateTimeDiffInMinutes(outT, inT)
+                        val csvBlockHoursStr = json.optString("blockHours", "").trim()
+                        val csvBlockMin = parseBlockMinutesFromLog(csvBlockHoursStr)
+
+                        if (calcBlockMin != null && calcBlockMin > 0) {
+                            if (csvBlockMin == null || Math.abs(csvBlockMin - calcBlockMin) > 1) {
+                                json.put("blockHours", formatMinutesToHoursClean(calcBlockMin))
+                            } else {
+                                json.put("blockHours", formatMinutesToHoursClean(csvBlockMin))
                             }
+                        } else if (csvBlockMin == null || csvBlockMin == 0) {
+                            // If block times not provided, calculate from flight time (offTime to onTime)
+                            val calcFlightMin = calculateTimeDiffInMinutes(offT, onT)
+                            if (calcFlightMin != null && calcFlightMin > 0) {
+                                json.put("blockHours", formatMinutesToHoursClean(calcFlightMin))
+                            }
+                        } else {
+                            json.put("blockHours", formatMinutesToHoursClean(csvBlockMin))
                         }
 
                         val importedFlightNum = json.optString("flightNum", "").trim().uppercase()

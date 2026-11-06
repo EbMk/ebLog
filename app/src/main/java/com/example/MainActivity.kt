@@ -86,6 +86,10 @@ import com.example.data.EbLogRepository
 import com.example.data.Airport
 import com.example.data.Aircraft
 import com.example.data.AircraftType
+import com.example.data.EbLogBackupManager
+import com.example.data.BackupPackageSummary
+import com.example.data.RestoreSelection
+import com.example.data.RestoreResult
 import com.example.ui.EbLogViewModel
 import com.example.ui.theme.MyApplicationTheme
 import java.text.SimpleDateFormat
@@ -240,9 +244,11 @@ class MainActivity : ComponentActivity() {
     }
 
     val viewModel = ViewModelProvider(this, viewModelFactory)[EbLogViewModel::class.java]
+    viewModel.initUiScale(this)
 
     setContent {
-      MyApplicationTheme {
+      val uiScale by viewModel.uiScale.collectAsStateWithLifecycle()
+      MyApplicationTheme(uiScale = uiScale) {
         EbLogSetupApp(viewModel)
       }
     }
@@ -1300,6 +1306,7 @@ fun EbLogDashboard(
     viewModel: EbLogViewModel,
     onReset: () -> Unit
 ) {
+    val context = LocalContext.current
     val menus = listOf("Dashboard", "Logbook", "ArptData", "More")
     val scope = rememberCoroutineScope()
     val logbookLazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -1328,6 +1335,7 @@ fun EbLogDashboard(
     var logbookCustomEndDate by remember { mutableStateOf<java.util.Date?>(null) }
     var logbookSelectedPilotRoles by remember { mutableStateOf(emptySet<String>()) }
     var logbookSelectedBlockTimes by remember { mutableStateOf(emptySet<String>()) }
+    var logbookSelectedCrews by remember { mutableStateOf(emptySet<String>()) }
     var logbookSortRecentFirst by remember { mutableStateOf(true) }
     var logbookViewBy by remember { mutableStateOf("All Records") }
 
@@ -1357,6 +1365,7 @@ fun EbLogDashboard(
                 logbookCustomEndDate = null
                 logbookSelectedPilotRoles = emptySet()
                 logbookSelectedBlockTimes = emptySet()
+                logbookSelectedCrews = emptySet()
                 logbookViewBy = "All Records"
                 showLogbookFilters = false
             }
@@ -1406,14 +1415,19 @@ fun EbLogDashboard(
         logbookCustomEndDate,
         logbookSelectedPilotRoles,
         logbookSelectedBlockTimes,
+        logbookSelectedCrews,
         logbookSortRecentFirst
     ) {
         allLogs.filter { log ->
             val matchesSearch = if (logbookSearchQuery.isBlank()) true else {
-                log.tailNumber.contains(logbookSearchQuery, ignoreCase = true) ||
-                log.fromCode.contains(logbookSearchQuery, ignoreCase = true) ||
-                log.toCode.contains(logbookSearchQuery, ignoreCase = true) ||
-                log.crew.contains(logbookSearchQuery, ignoreCase = true)
+                val q = logbookSearchQuery.trim()
+                log.tailNumber.contains(q, ignoreCase = true) ||
+                log.flightNum.contains(q, ignoreCase = true) ||
+                log.fromCode.contains(q, ignoreCase = true) ||
+                log.toCode.contains(q, ignoreCase = true) ||
+                log.aircraftType.contains(q, ignoreCase = true) ||
+                log.crew.contains(q, ignoreCase = true) ||
+                log.remarks.contains(q, ignoreCase = true)
             }
 
             val matchesIncomplete = if (!logbookIncompleteOnly) true else {
@@ -1471,7 +1485,7 @@ fun EbLogDashboard(
 
             val matchesBlockTime = if (logbookSelectedBlockTimes.isEmpty()) true else {
                 val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime) 
-                    ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() }) 
+                    ?: parseBlockMinutesFromLog(log.blockHours)
                     ?: 0
                 
                 logbookSelectedBlockTimes.any { option ->
@@ -1485,7 +1499,11 @@ fun EbLogDashboard(
                 }
             }
 
-            matchesSearch && matchesIncomplete && matchesAircraftType && matchesPeriod && matchesPilotRole && matchesBlockTime
+            val matchesCrew = if (logbookSelectedCrews.isEmpty()) true else {
+                logbookSelectedCrews.any { crewName -> log.crew.contains(crewName, ignoreCase = true) }
+            }
+
+            matchesSearch && matchesIncomplete && matchesAircraftType && matchesPeriod && matchesPilotRole && matchesBlockTime && matchesCrew
         }.let { filtered ->
             if (logbookSortRecentFirst) {
                 filtered
@@ -1519,7 +1537,6 @@ fun EbLogDashboard(
             tailNumber = log.tailNumber,
             aircraftType = log.aircraftType,
             crew = log.crew,
-            employer = log.employer,
             fromCode = log.toCode,
             toCode = "",
             outTime = "",
@@ -1556,7 +1573,6 @@ fun EbLogDashboard(
             tailNumber = log.tailNumber,
             aircraftType = log.aircraftType,
             crew = log.crew,
-            employer = log.employer,
             fromCode = log.toCode,
             toCode = log.fromCode,
             outTime = "",
@@ -1593,7 +1609,6 @@ fun EbLogDashboard(
             tailNumber = log.tailNumber,
             aircraftType = log.aircraftType,
             crew = log.crew,
-            employer = log.employer,
             fromCode = log.fromCode,
             toCode = log.toCode,
             outTime = log.outTime,
@@ -1658,8 +1673,8 @@ fun EbLogDashboard(
                     modifier = Modifier
                         .statusBarsPadding()
                         .fillMaxWidth()
-                        .height(64.dp)
-                        .padding(horizontal = 16.dp),
+                        .height(56.dp)
+                        .padding(horizontal = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1667,7 +1682,7 @@ fun EbLogDashboard(
                     if (showProfilePage) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(36.dp)
                                 .background(
                                     color = Color.White.copy(alpha = 0.1f),
                                     shape = CircleShape
@@ -1689,7 +1704,7 @@ fun EbLogDashboard(
                     } else if (showAddFlightLogPage && selectedPageIndex == 0) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(36.dp)
                                 .background(
                                     color = Color.White.copy(alpha = 0.1f),
                                     shape = CircleShape
@@ -1720,7 +1735,7 @@ fun EbLogDashboard(
                     } else if (selectedPageIndex == 1 || selectedPageIndex == 2 || selectedPageIndex == 3) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(36.dp)
                                 .background(
                                     color = Color.White.copy(alpha = 0.1f),
                                     shape = CircleShape
@@ -1755,7 +1770,7 @@ fun EbLogDashboard(
                     } else {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(36.dp)
                                 .background(
                                     color = Color(0xFFFFFDD0), // Cream background
                                     shape = CircleShape
@@ -1858,6 +1873,7 @@ fun EbLogDashboard(
                             "aircraft_types" -> "Aircraft Types"
                             "import_csv" -> "Import / Export"
                             "database" -> "Database Management"
+                            "print_logbook" -> "Print Out Logbook"
                             else -> "More Menus"
                         }
                         Text(
@@ -1885,10 +1901,10 @@ fun EbLogDashboard(
                     if (selectedPageIndex == 0 && !showAddFlightLogPage && !showProfilePage) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(36.dp)
                                 .background(
                                     color = Color.White.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(10.dp)
+                                    shape = RoundedCornerShape(8.dp)
                                 )
                                 .clickable {
                                     showQuickActionsDropdown = true
@@ -2070,6 +2086,7 @@ fun EbLogDashboard(
                                 )
                             }
 
+
                             // Filter Button
                             Box(
                                 modifier = Modifier
@@ -2116,10 +2133,10 @@ fun EbLogDashboard(
                     } else if (selectedPageIndex == 3) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(36.dp)
                                 .background(
                                     color = Color.White.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(10.dp)
+                                    shape = RoundedCornerShape(8.dp)
                                 )
                                 .testTag("top_right_more_btn"),
                             contentAlignment = Alignment.Center
@@ -2133,23 +2150,23 @@ fun EbLogDashboard(
                         }
                     } else {
                         if (showAddFlightLogPage && selectedPageIndex == 0) {
-                            Spacer(modifier = Modifier.size(40.dp))
+                            Spacer(modifier = Modifier.size(36.dp))
                         } else {
                             Box(
                                 modifier = Modifier
-                                    .size(40.dp)
-                                    .background(
-                                        color = Color.White.copy(alpha = 0.15f),
-                                        shape = RoundedCornerShape(10.dp)
-                                    )
-                                    .clickable {
-                                        if (!(showAddFlightLogPage && selectedPageIndex == 0)) {
-                                            showProfilePage = !showProfilePage
-                                        }
+                                .size(36.dp)
+                                .background(
+                                    color = Color.White.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .clickable {
+                                    if (!(showAddFlightLogPage && selectedPageIndex == 0)) {
+                                        showProfilePage = !showProfilePage
                                     }
-                                    .testTag("top_right_profile_btn"),
-                                contentAlignment = Alignment.Center
-                            ) {
+                                }
+                                .testTag("top_right_profile_btn"),
+                            contentAlignment = Alignment.Center
+                        ) {
                                 Icon(
                                     imageVector = if (showProfilePage) Icons.Default.Person else activeIcon,
                                     contentDescription = "Active Page Icon",
@@ -2387,6 +2404,8 @@ fun EbLogDashboard(
                         onSelectedPilotRolesChange = { logbookSelectedPilotRoles = it },
                         selectedBlockTimes = logbookSelectedBlockTimes,
                         onSelectedBlockTimesChange = { logbookSelectedBlockTimes = it },
+                        selectedCrews = logbookSelectedCrews,
+                        onSelectedCrewsChange = { logbookSelectedCrews = it },
                         sortRecentFirst = logbookSortRecentFirst,
                         onSortRecentFirstChange = { logbookSortRecentFirst = it },
                         viewBy = logbookViewBy,
@@ -2404,6 +2423,7 @@ fun EbLogDashboard(
                             logbookCustomEndDate = null
                             logbookSelectedPilotRoles = emptySet()
                             logbookSelectedBlockTimes = emptySet()
+                            logbookSelectedCrews = emptySet()
                         },
                         scrollState = logbookLazyListState
                     )
@@ -2524,25 +2544,30 @@ fun DashboardTabContent(
         var logPicMin = 0
         var logSicMin = 0
         var logFiMin = 0
+        var logSimMin = 0
 
         allLogs.forEach { log ->
             val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                ?: parseBlockMinutesFromLog(log.blockHours)
                 ?: 0
-            val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+            val crewCount = getCrewCount(log.crew)
             val proratedBlockMin = calculateProratedMinutes(blockMin, crewCount)
-            
-            logActualBlockMin += blockMin
-            logTotalMin += proratedBlockMin
-            val role = log.pilotRole.trim()
-            if (isPicRole(role, includeFI = true)) {
-                logPicMin += proratedBlockMin
-            } else if (role.equals("SIC", ignoreCase = true) || role.contains("Co-Pilot", ignoreCase = true) || role.equals("FO", ignoreCase = true)) {
-                logSicMin += proratedBlockMin
-            }
-            if (isFlightInstructorRole(role)) {
-                logFiMin += proratedBlockMin
+            val isSimLog = log.isSim || log.aircraftType.contains("SIM", ignoreCase = true) || log.remarks.contains("SIM", ignoreCase = true) || log.remarks.contains("FFS", ignoreCase = true)
+
+            if (isSimLog) {
+                logSimMin += proratedBlockMin
+            } else {
+                logActualBlockMin += blockMin
+                logTotalMin += proratedBlockMin
+                val role = log.pilotRole.trim()
+                if (isPicRole(role, includeFI = true)) {
+                    logPicMin += proratedBlockMin
+                } else if (role.equals("SIC", ignoreCase = true) || role.contains("Co-Pilot", ignoreCase = true) || role.equals("FO", ignoreCase = true)) {
+                    logSicMin += proratedBlockMin
+                }
+                if (isFlightInstructorRole(role)) {
+                    logFiMin += proratedBlockMin
+                }
             }
         }
 
@@ -2550,18 +2575,23 @@ fun DashboardTabContent(
         var prevPicMin = 0
         var prevSicMin = 0
         var prevFiMin = 0
+        var prevSimMin = 0
 
         previousExperiences.forEach { exp ->
             val mins = (exp.totalHours * 60).toInt()
-            prevTotalMin += mins
-            val role = exp.pilotRole.trim()
-            if (isPicRole(role, includeFI = true)) {
-                prevPicMin += mins
-            } else if (role.equals("SIC", ignoreCase = true) || role.contains("Co-Pilot", ignoreCase = true) || role.equals("FO", ignoreCase = true)) {
-                prevSicMin += mins
-            }
-            if (isFlightInstructorRole(role)) {
-                prevFiMin += mins
+            if (exp.isSim) {
+                prevSimMin += mins
+            } else {
+                prevTotalMin += mins
+                val role = exp.pilotRole.trim()
+                if (isPicRole(role, includeFI = true)) {
+                    prevPicMin += mins
+                } else if (role.equals("SIC", ignoreCase = true) || role.contains("Co-Pilot", ignoreCase = true) || role.equals("FO", ignoreCase = true)) {
+                    prevSicMin += mins
+                }
+                if (isFlightInstructorRole(role)) {
+                    prevFiMin += mins
+                }
             }
         }
 
@@ -2570,8 +2600,9 @@ fun DashboardTabContent(
         val totalPicMin = logPicMin + prevPicMin
         val totalSicMin = logSicMin + prevSicMin
         val totalFiMin = logFiMin + prevFiMin
+        val totalSimMin = logSimMin + prevSimMin
 
-        listOf(totalActualBlockMin, totalProratedBlockMin, totalPicMin, totalSicMin, totalFiMin)
+        listOf(totalActualBlockMin, totalProratedBlockMin, totalPicMin, totalSicMin, totalFiMin, totalSimMin)
     }
 
     val totalActualBlockMin = totals[0]
@@ -2579,6 +2610,7 @@ fun DashboardTabContent(
     val totalPicMin = totals[2]
     val totalSicMin = totals[3]
     val totalFiMin = totals[4]
+    val totalSimMin = totals[5]
 
     var selectedDashboardTab by remember { mutableIntStateOf(0) }
 
@@ -2912,14 +2944,14 @@ fun DashboardTabContent(
                                             fontSize = 14.sp
                                         )
                                         Text(
-                                            text = "Prorated Limit: ${limit.hours} hrs",
+                                            text = "Prorated Limit: ${formatMinutesToHoursClean(Math.round(limit.hours * 60).toInt())}",
                                             color = Color.White.copy(alpha = 0.5f),
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Medium
                                         )
                                     }
                                     Text(
-                                        text = String.format(java.util.Locale.US, "%.1f / %.1f hrs", proratedHours, limit.hours),
+                                        text = "${formatMinutesToHoursClean(proratedMin)} / ${formatMinutesToHoursClean(Math.round(limit.hours * 60).toInt())}",
                                         color = if (isExceeded) Color.Red else Color(0xFF10B981),
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 14.sp
@@ -3233,11 +3265,12 @@ fun DashboardTabContent(
                         }
                     } else {
                         monthStats.logs.forEachIndexed { idx, log ->
-                            val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                                ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                            val blockMin = log.splitMinutes
+                                ?: calculateTimeDiffInMinutes(log.outTime, log.inTime)
+                                ?: calculateTimeDiffInMinutes(log.offTime, log.onTime)
+                                ?: parseBlockMinutesFromLog(log.blockHours)
                                 ?: 0
-                            val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                            val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                            val crewCount = getCrewCount(log.crew)
                             val proratedMin = calculateProratedMinutes(blockMin, crewCount)
 
                             val bHrs = blockMin / 60
@@ -3279,9 +3312,37 @@ fun DashboardTabContent(
                                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                                             )
                                         }
+                                        if (log.splitPart == 1) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFFFFB300).copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    text = "Up to 00:00",
+                                                    color = Color(0xFFFFC107),
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        } else if (log.splitPart == 2) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFF38BDF8).copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    text = "After 00:00",
+                                                    color = Color(0xFF38BDF8),
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
                                     }
+                                    val effDate = log.displayDate ?: log.date
                                     Text(
-                                        text = "${log.date} \u2022 ${log.fromCode.ifBlank { "???" }} \u2794 ${log.toCode.ifBlank { "???" }}${if (log.aircraftType.isNotBlank()) " \u2022 " + log.aircraftType else ""}",
+                                        text = "$effDate \u2022 ${log.fromCode.ifBlank { "???" }} \u2794 ${log.toCode.ifBlank { "???" }}${if (log.aircraftType.isNotBlank()) " \u2022 " + log.aircraftType else ""}",
                                         color = Color.White.copy(alpha = 0.6f),
                                         fontSize = 12.sp
                                     )
@@ -3354,23 +3415,40 @@ fun calculatePeriodFlightStats(
     val eDate = endCal.time
 
     logs.forEach { log ->
-        val logDate = parseLogDate(log.date)
-        if (logDate != null) {
-            val cal = java.util.Calendar.getInstance().apply {
-                time = logDate
+        val split = getMonthSplitInfo(log)
+        if (split != null && split.extendsToNextMonth) {
+            val startCalD = java.util.Calendar.getInstance().apply {
+                time = split.startingDate
                 set(java.util.Calendar.HOUR_OF_DAY, 0)
                 set(java.util.Calendar.MINUTE, 0)
                 set(java.util.Calendar.SECOND, 0)
                 set(java.util.Calendar.MILLISECOND, 0)
             }
-            val lDate = cal.time
-            if (!lDate.before(sDate) && !lDate.after(eDate)) {
-                periodLogs.add(log)
-                val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                    ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
-                    ?: 0
-                val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+            val startD = startCalD.time
+
+            val nextCalD = java.util.Calendar.getInstance().apply {
+                time = split.nextDate
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }
+            val nextD = nextCalD.time
+
+            // Check if starting month falls in this period (credits time up to 00:00):
+            if (!startD.before(sDate) && !startD.after(eDate)) {
+                val startLog = log.copy(
+                    splitPart = 1,
+                    splitMinutes = split.startingMinutes,
+                    inTime = "00:00",
+                    onTime = "00:00",
+                    landingDay = 0,
+                    landingNight = 0
+                )
+                periodLogs.add(startLog)
+
+                val blockMin = split.startingMinutes
+                val crewCount = getCrewCount(log.crew)
                 val proratedBlock = calculateProratedMinutes(blockMin, crewCount)
 
                 totalBlockMin += blockMin
@@ -3386,6 +3464,75 @@ fun calculatePeriodFlightStats(
                     fiMin += proratedBlock
                 }
             }
+
+            // Check if next month falls in this period (credits time after 00:00):
+            if (!nextD.before(sDate) && !nextD.after(eDate)) {
+                val nextDateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                val nextLog = log.copy(
+                    splitPart = 2,
+                    splitMinutes = split.nextMinutes,
+                    displayDate = nextDateFormat.format(split.nextDate),
+                    date = java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale.US).format(split.nextDate),
+                    dateEpoch = split.nextDate.time,
+                    outTime = "00:00",
+                    offTime = "00:00",
+                    outMinutes = 0,
+                    takeoffDay = 0,
+                    takeoffNight = 0
+                )
+                periodLogs.add(nextLog)
+
+                val blockMin = split.nextMinutes
+                val crewCount = getCrewCount(log.crew)
+                val proratedBlock = calculateProratedMinutes(blockMin, crewCount)
+
+                totalBlockMin += blockMin
+                proratedMin += proratedBlock
+
+                val role = log.pilotRole.trim()
+                if (isPicRole(role, includeFI = true)) {
+                    picMin += proratedBlock
+                } else if (role.equals("SIC", ignoreCase = true) || role.contains("Co-Pilot", ignoreCase = true) || role.equals("FO", ignoreCase = true)) {
+                    sicMin += proratedBlock
+                }
+                if (isFlightInstructorRole(role)) {
+                    fiMin += proratedBlock
+                }
+            }
+        } else {
+            val logDate = parseLogDate(log.date)
+            if (logDate != null) {
+                val cal = java.util.Calendar.getInstance().apply {
+                    time = logDate
+                    set(java.util.Calendar.HOUR_OF_DAY, 0)
+                    set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                }
+                val lDate = cal.time
+                if (!lDate.before(sDate) && !lDate.after(eDate)) {
+                    periodLogs.add(log)
+                    val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
+                        ?: calculateTimeDiffInMinutes(log.offTime, log.onTime)
+                        ?: parseBlockMinutesFromLog(log.blockHours)
+                        ?: 0
+                    val crewCount = getCrewCount(log.crew)
+                    val proratedBlock = calculateProratedMinutes(blockMin, crewCount)
+
+                    totalBlockMin += blockMin
+                    proratedMin += proratedBlock
+
+                    val role = log.pilotRole.trim()
+                    if (isPicRole(role, includeFI = true)) {
+                        picMin += proratedBlock
+                    } else if (role.equals("SIC", ignoreCase = true) || role.contains("Co-Pilot", ignoreCase = true) || role.equals("FO", ignoreCase = true)) {
+                        sicMin += proratedBlock
+                    }
+                    if (isFlightInstructorRole(role)) {
+                        fiMin += proratedBlock
+                    }
+                }
+            }
         }
     }
 
@@ -3395,7 +3542,7 @@ fun calculatePeriodFlightStats(
         picMin = picMin,
         sicMin = sicMin,
         flightCount = periodLogs.size,
-        logs = periodLogs.sortedByDescending { parseLogDate(it.date)?.time ?: 0L },
+        logs = periodLogs.sortedWith { l1, l2 -> compareFlightLogsRecentToOld(l1, l2) },
         fiMin = fiMin
     )
 }
@@ -3408,11 +3555,7 @@ fun ExperienceItemRow(
     iconColor: Color,
     testTag: String
 ) {
-    val hrs = minutes / 60
-    val mins = minutes % 60
-    val decimal = minutes / 60.0
-    val formattedTime = String.format(java.util.Locale.US, "%02d:%02d", hrs, mins)
-    val formattedDecimal = String.format(java.util.Locale.US, "%.1f hrs", decimal)
+    val formattedTime = formatMinutesToHoursClean(minutes)
 
     Row(
         modifier = Modifier
@@ -3446,19 +3589,12 @@ fun ExperienceItemRow(
             )
         }
         
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = formattedTime,
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp
-            )
-            Text(
-                text = formattedDecimal,
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 11.sp
-            )
-        }
+        Text(
+            text = formattedTime,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp
+        )
     }
 }
 
@@ -4330,8 +4466,7 @@ fun ArptDataTabContent(
                             val blockMinutes = calculateTimeDiffInMinutes(log.outTime, log.inTime)
                             if (blockMinutes != null) {
                                 totalBlock += blockMinutes
-                                val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                                val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                                val crewCount = getCrewCount(log.crew)
                                 totalProrated += calculateProratedMinutes(blockMinutes, crewCount)
                             }
                         }
@@ -4345,8 +4480,7 @@ fun ArptDataTabContent(
                             val blockMinutes = calculateTimeDiffInMinutes(log.outTime, log.inTime)
                             if (blockMinutes != null) {
                                 totalBlock += blockMinutes
-                                val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                                val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                                val crewCount = getCrewCount(log.crew)
                                 totalProrated += calculateProratedMinutes(blockMinutes, crewCount)
                             }
                         }
@@ -4426,8 +4560,7 @@ fun ArptDataTabContent(
                                     pagedArrivals.forEachIndexed { index, log ->
                                         val itemNumber = safeArrivalPage * pageSize + index + 1
                                         val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                                        val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                                        val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                                        val crewCount = getCrewCount(log.crew)
                                         val proratedBlockMin = blockMin?.let { calculateProratedMinutes(it, crewCount) }
                                         val blkStr = blockMin?.let { formatMinutesToHoursClean(it) } ?: "--:--"
                                         val proStr = proratedBlockMin?.let { formatMinutesToHoursClean(it) } ?: "--:--"
@@ -4662,8 +4795,7 @@ fun ArptDataTabContent(
                                     pagedDepartures.forEachIndexed { index, log ->
                                         val itemNumber = safeDeparturePage * pageSize + index + 1
                                         val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                                        val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                                        val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                                        val crewCount = getCrewCount(log.crew)
                                         val proratedBlockMin = blockMin?.let { calculateProratedMinutes(it, crewCount) }
                                         val blkStr = blockMin?.let { formatMinutesToHoursClean(it) } ?: "--:--"
                                         val proStr = proratedBlockMin?.let { formatMinutesToHoursClean(it) } ?: "--:--"
@@ -5243,6 +5375,10 @@ fun MoreTabContent(
     var showAddAircraftForm by remember { mutableStateOf(false) }
     var showAddAircraftTypeForm by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = currentSubMenu != null) {
+        currentSubMenu = null
+    }
+
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     var hasExternalAccess by remember {
         mutableStateOf(
@@ -5597,7 +5733,7 @@ fun MoreTabContent(
                     .padding(bottom = 12.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+                border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.25f))
             ) {
                 Row(
                     modifier = Modifier
@@ -5606,9 +5742,9 @@ fun MoreTabContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Delete,
+                        imageVector = Icons.Default.CloudSync,
                         contentDescription = "Database",
-                        tint = MaterialTheme.colorScheme.error,
+                        tint = Color(0xFFFFB300),
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(16.dp))
@@ -5620,7 +5756,53 @@ fun MoreTabContent(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Clear or reset application local database",
+                            text = "Export & restore database, selective import & reset",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.6f)
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.4f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            // Menu 3: Print Out Logbook
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { currentSubMenu = "print_logbook" }
+                    .padding(bottom = 12.dp)
+                    .testTag("print_logbook_menu_option"),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
+                border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Print,
+                        contentDescription = "Print Out Logbook",
+                        tint = Color(0xFFFFB300),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Print Out Logbook",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Official pilot logbook printouts (EASA, FAA, Jeppesen, Detailed)",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.6f)
                         )
@@ -6177,13 +6359,13 @@ fun MoreTabContent(
                                                 }
                                                 Spacer(modifier = Modifier.height(3.dp))
                                                 Text(
-                                                    text = "${result.limitDays}-Day Rolling Limit (${result.limitHours} hrs)",
+                                                    text = "${result.limitDays}-Day Rolling Limit (${formatMinutesToHoursClean(Math.round(result.limitHours * 60).toInt())})",
                                                     color = Color.White.copy(alpha = 0.5f),
                                                     fontSize = 12.sp
                                                 )
                                                 Spacer(modifier = Modifier.height(3.dp))
                                                 Text(
-                                                    text = String.format(java.util.Locale.US, "Prorated: %.1f hrs • Limit: %.1f hrs", result.proratedHours, result.limitHours),
+                                                    text = "Prorated: ${formatMinutesToHoursClean(Math.round(result.proratedHours * 60).toInt())} • Limit: ${formatMinutesToHoursClean(Math.round(result.limitHours * 60).toInt())}",
                                                     color = Color(0xFFEF4444),
                                                     fontSize = 11.sp,
                                                     fontWeight = FontWeight.SemiBold
@@ -6194,14 +6376,14 @@ fun MoreTabContent(
                                                 horizontalAlignment = Alignment.End
                                             ) {
                                                 Text(
-                                                    text = String.format(java.util.Locale.US, "%.1f hrs", result.proratedHours),
+                                                    text = formatMinutesToHoursClean(Math.round(result.proratedHours * 60).toInt()),
                                                     fontWeight = FontWeight.Bold,
                                                     color = Color.White,
                                                     fontSize = 14.sp
                                                 )
                                                 Spacer(modifier = Modifier.height(2.dp))
                                                 Text(
-                                                    text = String.format(java.util.Locale.US, "+%.1f hrs over", result.exceededBy),
+                                                    text = "+${formatMinutesToHoursClean(Math.round(result.exceededBy * 60).toInt())} over",
                                                     color = Color(0xFFEF4444),
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 12.sp
@@ -6223,6 +6405,85 @@ fun MoreTabContent(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                // 0. Display & Text Scaling Group
+                val currentUiScale by viewModel.uiScale.collectAsStateWithLifecycle()
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "DISPLAY & TEXT SIZE / VISIBILITY",
+                        color = Color(0xFFFFB300),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 6.dp, start = 4.dp)
+                    )
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Adjust overall interface and text scaling to fit more objects and logs clearly into view:",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 11.sp
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                val scaleOptions = listOf(
+                                    Triple(0.85f, "Compact (Default)", "Fits More in View"),
+                                    Triple(0.78f, "Extra Compact", "Maximum Density"),
+                                    Triple(1.0f, "Standard", "100% Size")
+                                )
+                                scaleOptions.forEach { (scale, title, subtitle) ->
+                                    val isSelected = Math.abs(currentUiScale - scale) < 0.02f
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(
+                                                color = if (isSelected) Color(0xFFFFB300).copy(alpha = 0.2f) else Color(0xFF13181F),
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isSelected) Color(0xFFFFB300) else Color.White.copy(alpha = 0.12f),
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable {
+                                                viewModel.setUiScale(context, scale)
+                                            }
+                                            .padding(vertical = 8.dp, horizontal = 4.dp)
+                                            .testTag("scale_option_${(scale * 100).toInt()}"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = title,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isSelected) Color(0xFFFFB300) else Color.White,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            Text(
+                                                text = subtitle,
+                                                fontSize = 9.sp,
+                                                color = if (isSelected) Color(0xFFFFB300).copy(alpha = 0.8f) else Color.White.copy(alpha = 0.5f),
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // 1. Airline Prefix Group
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -7562,11 +7823,11 @@ fun MoreTabContent(
                     )
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(filteredAircraftTypes, key = { it.code }) { type ->
+                    filteredAircraftTypes.forEach { type ->
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -7744,10 +8005,10 @@ fun MoreTabContent(
                             val csvStringBuilder = java.lang.StringBuilder()
                             
                             val headers = listOf(
-                                "flightNum", "date", "tailNumber", "aircraftType", "crew", "employer",
+                                "flightNum", "date", "tailNumber", "aircraftType", "crew",
                                 "fromCode", "toCode", "outTime", "offTime", "onTime", "inTime",
                                 "pfFrom", "pfTo", "takeoffDay", "takeoffNight", "landingDay", "landingNight",
-                                "approachType", "pilotRole", "flightRules", "remarks"
+                                "approachType", "pilotRole", "flightRules", "remarks", "blockHours", "nightTime"
                             )
                             csvStringBuilder.append(headers.joinToString(",")).append("\n")
 
@@ -8118,6 +8379,7 @@ fun MoreTabContent(
             val prevExpAircraftTypes by viewModel.aircraftTypes.collectAsStateWithLifecycle(initialValue = emptyList())
             val prevExpAircrafts by viewModel.aircrafts.collectAsStateWithLifecycle(initialValue = emptyList())
             
+            var isSimExperience by remember { mutableStateOf(false) }
             var aircraftTypeInput by remember { mutableStateOf("") }
             var pilotRoleInput by remember { mutableStateOf("") }
             var totalHoursInput by remember { mutableStateOf("") }
@@ -8137,11 +8399,61 @@ fun MoreTabContent(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        text = "Add Previous Experience Record",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = Color(0xFFFFB300)
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Add Previous Experience",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color(0xFFFFB300)
+                        )
+                        // Flight vs Simulator Segmented Toggle
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFF141A22),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (!isSimExperience) Color(0xFFFFB300) else Color.Transparent)
+                                        .clickable { isSimExperience = false }
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                        .testTag("prev_exp_toggle_flight"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "✈ Flight",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (!isSimExperience) Color.Black else Color.White.copy(alpha = 0.6f)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (isSimExperience) Color(0xFF38BDF8) else Color.Transparent)
+                                        .clickable { isSimExperience = true }
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                        .testTag("prev_exp_toggle_sim"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "🕹 Sim",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSimExperience) Color.Black else Color.White.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     // Aircraft Type Input (Optional) with Dropdown
                     var showPrevExpTypeDropdown by remember { mutableStateOf(false) }
@@ -8259,17 +8571,14 @@ fun MoreTabContent(
                     SelectableOutlinedTextField(
                         value = totalHoursInput,
                         onValueChange = { input ->
-                            if (input.isEmpty() || input.all { it.isDigit() || it == '.' }) {
-                                val dotCount = input.count { it == '.' }
-                                if (dotCount <= 1) {
-                                    totalHoursInput = input
-                                }
+                            if (input.isEmpty() || input.all { it.isDigit() || it == '.' || it == ':' }) {
+                                totalHoursInput = input
                             }
                         },
-                        label = { Text("Total Hours", color = Color.White.copy(alpha = 0.5f)) },
-                        placeholder = { Text("e.g. 150.5", color = Color.White.copy(alpha = 0.3f)) },
+                        label = { Text("Total Hours (HH:MM)", color = Color.White.copy(alpha = 0.5f)) },
+                        placeholder = { Text("e.g. 150:30", color = Color.White.copy(alpha = 0.3f)) },
                         modifier = Modifier.fillMaxWidth().testTag("prev_exp_total_hours"),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = Color(0xFFFFB300),
                             unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
@@ -8294,6 +8603,7 @@ fun MoreTabContent(
                     ) {
                         Button(
                             onClick = {
+                                isSimExperience = false
                                 aircraftTypeInput = ""
                                 pilotRoleInput = ""
                                 totalHoursInput = ""
@@ -8312,9 +8622,14 @@ fun MoreTabContent(
                                     experienceFormError = "Pilot Role is required"
                                     return@Button
                                 }
-                                val hours = totalHoursInput.toDoubleOrNull()
+                                val parsedMin = parseBlockMinutesFromLog(totalHoursInput)
+                                val hours = if (parsedMin != null) {
+                                    parsedMin / 60.0
+                                } else {
+                                    totalHoursInput.toDoubleOrNull()
+                                }
                                 if (hours == null || hours <= 0.0) {
-                                    experienceFormError = "Please enter a valid total hours number greater than 0"
+                                    experienceFormError = "Please enter valid total hours (e.g. HH:MM) greater than 0"
                                     return@Button
                                 }
 
@@ -8322,15 +8637,19 @@ fun MoreTabContent(
                                     com.example.data.PreviousExperience(
                                         aircraftType = aircraftTypeInput.trim(),
                                         pilotRole = pilotRoleInput.trim(),
-                                        totalHours = hours
+                                        totalHours = hours,
+                                        isSim = isSimExperience
                                     )
                                 )
 
+                                val wasSim = isSimExperience
+                                isSimExperience = false
                                 aircraftTypeInput = ""
                                 pilotRoleInput = ""
                                 totalHoursInput = ""
                                 experienceFormError = ""
-                                Toast.makeText(context, "Previous Experience Added Successfully", Toast.LENGTH_SHORT).show()
+                                val successMsg = if (wasSim) "Previous Simulator Experience Added" else "Previous Experience Added Successfully"
+                                Toast.makeText(context, successMsg, Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier.weight(1f).testTag("prev_exp_save_btn"),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300), contentColor = Color.Black)
@@ -8392,18 +8711,38 @@ fun MoreTabContent(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = if (exp.aircraftType.isNotBlank()) exp.aircraftType else "All Types / General",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = if (exp.aircraftType.isNotBlank()) Color.White else Color(0xFFFFB300)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (exp.aircraftType.isNotBlank()) exp.aircraftType else "All Types / General",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = if (exp.aircraftType.isNotBlank()) Color.White else Color(0xFFFFB300)
+                                    )
+                                    if (exp.isSim) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = Color(0xFF38BDF8).copy(alpha = 0.2f),
+                                            border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f))
+                                        ) {
+                                            Text(
+                                                text = "SIM",
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Color(0xFF38BDF8)
+                                            )
+                                        }
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Text(
-                                        text = "Role: ${exp.pilotRole}",
+                                        text = if (exp.isSim) "Sim Role: ${exp.pilotRole}" else "Role: ${exp.pilotRole}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color.White.copy(alpha = 0.5f)
                                     )
@@ -8413,9 +8752,9 @@ fun MoreTabContent(
                                         color = Color.White.copy(alpha = 0.3f)
                                     )
                                     Text(
-                                        text = String.format(Locale.US, "%.1f hrs", exp.totalHours),
+                                        text = formatMinutesToHoursClean(Math.round(exp.totalHours * 60).toInt()),
                                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                        color = Color(0xFFFFB300)
+                                        color = if (exp.isSim) Color(0xFF38BDF8) else Color(0xFFFFB300)
                                     )
                                 }
                             }
@@ -8438,42 +8777,357 @@ fun MoreTabContent(
             }
         } else if (currentSubMenu == "database") {
             var pendingClearType by remember { mutableStateOf<String?>(null) }
-            val restoreDbFileLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.GetContent()
+            var pendingRestoreSummary by remember { mutableStateOf<BackupPackageSummary?>(null) }
+            var isExporting by remember { mutableStateOf(false) }
+            var isRestoring by remember { mutableStateOf(false) }
+            var legacySqliteFileToRestore by remember { mutableStateOf<java.io.File?>(null) }
+            val coroutineScope = rememberCoroutineScope()
+
+            val exportDbFileLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.CreateDocument("application/json")
             ) { uri: android.net.Uri? ->
                 if (uri != null) {
-                    try {
-                        val internalDb = context.getDatabasePath("eblog_db")
-                        val extDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "PilotLogbook")
-                        if (!extDir.exists()) extDir.mkdirs()
-                        val extDb = java.io.File(extDir, "eblog_offline_db.sqlite")
-
-                        val tempFile = java.io.File(context.cacheDir, "temp_restore.sqlite")
-                        context.contentResolver.openInputStream(uri)?.use { input ->
-                            tempFile.outputStream().use { output ->
-                                input.copyTo(output)
-                            }
+                    coroutineScope.launch {
+                        isExporting = true
+                        val result = EbLogBackupManager.exportDatabaseToFile(
+                            context = context,
+                            uri = uri,
+                            repository = viewModel.repository,
+                            sharedPreferences = sharedPreferences
+                        )
+                        isExporting = false
+                        result.onSuccess { summary ->
+                            Toast.makeText(
+                                context,
+                                "Database exported successfully!\n${summary.flightLogsCount} flights, ${summary.airportsCount} airports, ${summary.aircraftsCount} aircraft, profile & settings saved.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }.onFailure { e ->
+                            Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
                         }
-
-                        if (tempFile.exists() && tempFile.length() > 0) {
-                            // Copy to internal
-                            internalDb.parentFile?.mkdirs()
-                            tempFile.copyTo(internalDb, overwrite = true)
-                            // Copy to external if accessible
-                            try {
-                                tempFile.copyTo(extDb, overwrite = true)
-                            } catch (_: Exception) {}
-
-                            Toast.makeText(context, "Database restored successfully! Please restart app to reload all tables.", Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(context, "Selected database file is empty.", Toast.LENGTH_LONG).show()
-                        }
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "Failed to restore database: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
 
+            val restoreDbFileLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.GetContent()
+            ) { uri: android.net.Uri? ->
+                if (uri != null) {
+                    coroutineScope.launch {
+                        isRestoring = true
+                        val parseResult = EbLogBackupManager.parseBackupFile(context, uri)
+                        if (parseResult.isSuccess) {
+                            isRestoring = false
+                            pendingRestoreSummary = parseResult.getOrNull()
+                        } else {
+                            // Check if it's a legacy SQLite database file
+                            try {
+                                val tempFile = java.io.File(context.cacheDir, "temp_restore.sqlite")
+                                context.contentResolver.openInputStream(uri)?.use { input ->
+                                    tempFile.outputStream().use { output ->
+                                        input.copyTo(output)
+                                    }
+                                }
+                                isRestoring = false
+                                if (tempFile.exists() && tempFile.length() > 0) {
+                                    legacySqliteFileToRestore = tempFile
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "Could not read backup file: ${parseResult.exceptionOrNull()?.message ?: "Unrecognized format"}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } catch (e: Exception) {
+                                isRestoring = false
+                                Toast.makeText(context, "Failed to read file: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Restore Database Selection Dialog (requests which data to import)
+            pendingRestoreSummary?.let { summary ->
+                RestoreDatabaseSelectionDialog(
+                    summary = summary,
+                    onDismiss = { pendingRestoreSummary = null },
+                    onConfirmRestore = { selection ->
+                        coroutineScope.launch {
+                            isRestoring = true
+                            pendingRestoreSummary = null
+                            val result = EbLogBackupManager.restoreDatabaseFromFile(
+                                context = context,
+                                summary = summary,
+                                selection = selection,
+                                repository = viewModel.repository,
+                                sharedPreferences = sharedPreferences
+                            )
+                            isRestoring = false
+                            if (result.success) {
+                                if (result.userProfileRestored) {
+                                    sharedPreferences.getString("user_name", null)?.let {
+                                        onUserNameChange(it)
+                                    }
+                                }
+                                val summaryMsg = buildString {
+                                    append("Database restored successfully!\n")
+                                    if (result.flightsRestored > 0) append("• ${result.flightsRestored} flights ")
+                                    if (result.airportsRestored > 0) append("• ${result.airportsRestored} airports ")
+                                    if (result.aircraftsRestored > 0) append("• ${result.aircraftsRestored} aircraft ")
+                                    if (result.typesRestored > 0) append("• ${result.typesRestored} types ")
+                                    if (result.userProfileRestored) append("• User profile ")
+                                    if (result.appSettingsRestored) append("• App settings ")
+                                }
+                                Toast.makeText(context, summaryMsg, Toast.LENGTH_LONG).show()
+                            } else {
+                                Toast.makeText(context, "Restore failed: ${result.errorMessage}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                )
+            }
+
+            // Legacy SQLite Restore confirmation dialog
+            legacySqliteFileToRestore?.let { file ->
+                AlertDialog(
+                    onDismissRequest = { legacySqliteFileToRestore = null },
+                    title = {
+                        Text("Restore SQLite Database", fontWeight = FontWeight.Bold, color = Color.White)
+                    },
+                    text = {
+                        Text(
+                            "The selected file appears to be a direct SQLite database. Restoring it will replace the current active database completely.\n\nDo you wish to proceed?",
+                            color = Color.White.copy(alpha = 0.8f),
+                            fontSize = 13.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val tempFile = file
+                                legacySqliteFileToRestore = null
+                                try {
+                                    val internalDb = context.getDatabasePath("eblog_db")
+                                    val extDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "PilotLogbook")
+                                    if (!extDir.exists()) extDir.mkdirs()
+                                    val extDb = java.io.File(extDir, "eblog_offline_db.sqlite")
+
+                                    internalDb.parentFile?.mkdirs()
+                                    tempFile.copyTo(internalDb, overwrite = true)
+                                    try {
+                                        tempFile.copyTo(extDb, overwrite = true)
+                                    } catch (_: Exception) {}
+                                    Toast.makeText(context, "Database restored successfully! Please restart app to reload all tables.", Toast.LENGTH_LONG).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Failed to restore database: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300))
+                        ) {
+                            Text("Restore Database", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { legacySqliteFileToRestore = null }) {
+                            Text("Cancel", color = Color.White.copy(alpha = 0.6f))
+                        }
+                    },
+                    containerColor = Color(0xFF1E2530)
+                )
+            }
+
+            // Primary Card: Export & Restore Database
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF161B22)),
+                border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.5f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFFFFB300).copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.4f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CloudSync,
+                                contentDescription = null,
+                                tint = Color(0xFFFFB300),
+                                modifier = Modifier
+                                    .padding(8.dp)
+                                    .size(24.dp)
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = "Export & Restore Database",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White
+                            )
+                            Text(
+                                text = "Full backup & selective restore for all data",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFFFFB300)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Export database will backup all app settings, user information, airport, aircraft, flight logs and all available records to a selected file. When restoring, you choose exactly which data categories to import to the app.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 13.sp
+                    )
+
+                    if (isExporting || isRestoring) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF1E2530), RoundedCornerShape(8.dp))
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = Color(0xFFFFB300),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = if (isExporting) "Exporting database to file..." else "Processing database restore...",
+                                color = Color.White,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Export Database Button
+                        Button(
+                            onClick = {
+                                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                                exportDbFileLauncher.launch("eblog_backup_$timestamp.json")
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .testTag("export_database_btn"),
+                            shape = RoundedCornerShape(8.dp),
+                            enabled = !isExporting && !isRestoring
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SaveAlt,
+                                contentDescription = null,
+                                tint = Color.Black,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Export Database",
+                                color = Color.Black,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Restore Database Button
+                        OutlinedButton(
+                            onClick = {
+                                restoreDbFileLauncher.launch("*/*")
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.7f)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .testTag("restore_database_btn"),
+                            shape = RoundedCornerShape(8.dp),
+                            enabled = !isExporting && !isRestoring
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Restore,
+                                contentDescription = null,
+                                tint = Color(0xFFFFB300),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Restore Database",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // Quick Backup to Downloads button
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                try {
+                                    val extStorage = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                    if (!extStorage.exists()) extStorage.mkdirs()
+                                    val timestamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                                    val backupFile = java.io.File(extStorage, "eblog_backup_$timestamp.json")
+                                    val jsonString = EbLogBackupManager.createFullBackupJson(
+                                        viewModel.repository,
+                                        sharedPreferences
+                                    )
+                                    backupFile.writeText(jsonString, Charsets.UTF_8)
+                                    Toast.makeText(
+                                        context,
+                                        "Backup saved to Downloads/${backupFile.name}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Quick backup error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp)
+                            .testTag("quick_backup_downloads_btn"),
+                        shape = RoundedCornerShape(8.dp),
+                        enabled = !isExporting && !isRestoring
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = null,
+                            tint = Color(0xFF10B981),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Quick Backup to Downloads Folder",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White.copy(alpha = 0.85f)
+                        )
+                    }
+                }
+            }
+
+            // Storage Location and Persistence Card
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -8482,7 +9136,7 @@ fun MoreTabContent(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF161B22)),
                 border = BorderStroke(
                     1.dp,
-                    if (hasExternalAccess) Color(0xFF10B981).copy(alpha = 0.4f) else Color(0xFFFFB300).copy(alpha = 0.4f)
+                    if (hasExternalAccess) Color(0xFF10B981).copy(alpha = 0.4f) else Color.White.copy(alpha = 0.12f)
                 )
             ) {
                 Column(
@@ -8594,53 +9248,6 @@ fun MoreTabContent(
                                     color = Color(0xFF10B981)
                                 )
                             }
-                        }
-                    }
-
-                    Divider(color = Color.White.copy(alpha = 0.1f))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // Restore from device file
-                        OutlinedButton(
-                            onClick = { restoreDbFileLauncher.launch("*/*") },
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.5f)),
-                            modifier = Modifier.weight(1f).testTag("restore_db_file_btn"),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.FileOpen, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Restore Database", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        // Backup database
-                        OutlinedButton(
-                            onClick = {
-                                try {
-                                    val internalDb = context.getDatabasePath("eblog_db")
-                                    val extStorage = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                                    val backupFile = java.io.File(extStorage, "PilotLogbook_Backup.sqlite")
-                                    if (internalDb.exists()) {
-                                        internalDb.copyTo(backupFile, overwrite = true)
-                                        Toast.makeText(context, "Backup saved to Downloads/PilotLogbook_Backup.sqlite", Toast.LENGTH_LONG).show()
-                                    } else {
-                                        Toast.makeText(context, "No active database to backup.", Toast.LENGTH_SHORT).show()
-                                    }
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "Backup error: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-                            modifier = Modifier.weight(1f).testTag("backup_db_btn"),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.Save, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Backup Database", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -8871,6 +9478,17 @@ fun MoreTabContent(
                     textContentColor = Color.White
                 )
             }
+        } else if (currentSubMenu == "print_logbook") {
+            val allLogs = remember(notesList) {
+                notesList.mapNotNull { parseFlightLog(it) }
+                    .sortedWith { l1, l2 -> compareFlightLogsRecentToOld(l1, l2) }
+            }
+            com.example.ui.PrintLogbookScreen(
+                allLogs = allLogs,
+                profile = actualProfile,
+                previousExperiences = actualProfile.getPreviousExperiences(),
+                onBack = { currentSubMenu = null }
+            )
         }
     }
 }
@@ -8962,6 +9580,7 @@ fun parseLogDate(dateStr: String): java.util.Date? {
 }
 
 // --- Flight Log and Airport Database Models ---
+@androidx.compose.runtime.Immutable
 data class FlightLog(
     val id: Int = 0,
     val flightNum: String = "",
@@ -8969,7 +9588,6 @@ data class FlightLog(
     val tailNumber: String = "",
     val aircraftType: String = "",
     val crew: String = "",
-    val employer: String = "",
     val fromCode: String = "",
     val toCode: String = "",
     val outTime: String = "",
@@ -8990,8 +9608,123 @@ data class FlightLog(
     val nightTime: String = "",
     val blockHours: String = "",
     val dateEpoch: Long = 0L,
-    val outMinutes: Int = 0
+    val outMinutes: Int = 0,
+    val splitPart: Int = 0, // 0 = standard/unsplit, 1 = starting month portion (up to 00:00), 2 = next month portion (after 00:00)
+    val splitMinutes: Int? = null,
+    val displayDate: String? = null,
+    val isSim: Boolean = false
 )
+
+@androidx.compose.runtime.Immutable
+data class MonthSplitInfo(
+    val extendsToNextMonth: Boolean,
+    val startingMonthKey: String,
+    val nextMonthKey: String,
+    val startingYearKey: String,
+    val nextYearKey: String,
+    val startingDate: java.util.Date,
+    val nextDate: java.util.Date,
+    val startingMinutes: Int,
+    val nextMinutes: Int,
+    val totalMinutes: Int
+)
+
+fun getMonthSplitInfo(log: FlightLog): MonthSplitInfo? {
+    val startDate = parseLogDate(log.date) ?: return null
+    val depStr = if (log.outTime.isNotBlank()) log.outTime else log.offTime
+    val arrStr = if (log.inTime.isNotBlank()) log.inTime else log.onTime
+    val depMin = parseTimeToMinutes(depStr) ?: return null
+    val arrMin = parseTimeToMinutes(arrStr) ?: return null
+
+    // Crossing midnight into the next calendar day happens when arrMin < depMin
+    if (arrMin >= depMin || arrMin <= 0) {
+        return null
+    }
+
+    val cal = java.util.Calendar.getInstance().apply {
+        time = startDate
+        set(java.util.Calendar.HOUR_OF_DAY, 0)
+        set(java.util.Calendar.MINUTE, 0)
+        set(java.util.Calendar.SECOND, 0)
+        set(java.util.Calendar.MILLISECOND, 0)
+    }
+    val day = cal.get(java.util.Calendar.DAY_OF_MONTH)
+    val maxDay = cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+    if (day != maxDay) {
+        // Crosses midnight, but within the same month (not extending to next month)
+        return null
+    }
+
+    val startMins = 24 * 60 - depMin
+    val nextMins = arrMin
+    val totalMins = startMins + nextMins
+
+    val nextCal = java.util.Calendar.getInstance().apply {
+        time = startDate
+        add(java.util.Calendar.DAY_OF_YEAR, 1)
+        set(java.util.Calendar.HOUR_OF_DAY, 0)
+        set(java.util.Calendar.MINUTE, 0)
+        set(java.util.Calendar.SECOND, 0)
+        set(java.util.Calendar.MILLISECOND, 0)
+    }
+    val nextDate = nextCal.time
+
+    val mFormat = java.text.SimpleDateFormat("MMMM yyyy", java.util.Locale.US)
+    val yFormat = java.text.SimpleDateFormat("yyyy", java.util.Locale.US)
+
+    return MonthSplitInfo(
+        extendsToNextMonth = true,
+        startingMonthKey = mFormat.format(startDate),
+        nextMonthKey = mFormat.format(nextDate),
+        startingYearKey = yFormat.format(startDate),
+        nextYearKey = yFormat.format(nextDate),
+        startingDate = startDate,
+        nextDate = nextDate,
+        startingMinutes = startMins,
+        nextMinutes = nextMins,
+        totalMinutes = totalMins
+    )
+}
+
+fun parseCrewAndTrainee(rawCrew: String): Pair<String, String> {
+    if (rawCrew.isBlank()) return Pair("", "")
+    val delimiter = when {
+        rawCrew.contains("|") -> "|"
+        rawCrew.contains("#") -> "#"
+        else -> null
+    }
+    return if (delimiter != null) {
+        val parts = rawCrew.split(delimiter, limit = 2)
+        Pair(parts[0].trim(), parts.getOrNull(1)?.trim().orEmpty())
+    } else {
+        Pair(rawCrew.trim(), "")
+    }
+}
+
+fun formatCrewWithTrainee(crewNames: String, traineeName: String): String {
+    val cleanCrew = crewNames.trim()
+    val cleanTrainee = traineeName.trim()
+    return if (cleanTrainee.isNotEmpty()) {
+        if (cleanCrew.isNotEmpty()) "$cleanCrew | $cleanTrainee" else cleanTrainee
+    } else {
+        cleanCrew
+    }
+}
+
+fun getCrewMembersOnly(rawCrew: String): List<String> {
+    val (crewPart, _) = parseCrewAndTrainee(rawCrew)
+    if (crewPart.isBlank()) return emptyList()
+    return crewPart.split(",").map { it.trim() }.filter { it.isNotEmpty() && it != "-" }
+}
+
+fun getCrewCount(rawCrew: String): Int {
+    val members = getCrewMembersOnly(rawCrew)
+    return if (members.isEmpty()) 2 else members.size
+}
+
+fun getTraineeName(rawCrew: String): String {
+    return parseCrewAndTrainee(rawCrew).second
+}
 
 fun isFlightInstructorRole(role: String?): Boolean {
     if (role.isNullOrBlank()) return false
@@ -9077,27 +9810,35 @@ data class AirportInfo(
     val elevation: String
 )
 
+private val flightLogParseCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<Int, FlightLog>>()
+
 fun parseFlightLog(note: com.example.data.EbLogNote): FlightLog? {
     if (!note.content.startsWith("FLIGHTLOG::")) return null
+    val contentHash = note.content.hashCode()
+    val cached = flightLogParseCache[note.id]
+    if (cached != null && cached.first == contentHash) {
+        return cached.second
+    }
     return try {
         val jsonStr = note.content.substring("FLIGHTLOG::".length)
         val json = org.json.JSONObject(jsonStr)
         val dateStr = json.optString("date", "")
         val outTimeStr = json.optString("outTime", "")
+        val offTimeStr = json.optString("offTime", "")
+        val effectiveDepTime = if (outTimeStr.isNotBlank()) outTimeStr else offTimeStr
         val epoch = parseLogDate(dateStr)?.time ?: 0L
-        val outMin = convertHHMMToMinutes(ensureHHMMFormat(outTimeStr)) ?: 0
-        FlightLog(
+        val outMin = convertHHMMToMinutes(ensureHHMMFormat(effectiveDepTime)) ?: 0
+        val parsed = FlightLog(
             id = note.id,
             flightNum = json.optString("flightNum", ""),
             date = dateStr,
             tailNumber = json.optString("tailNumber", ""),
             aircraftType = json.optString("aircraftType", ""),
             crew = json.optString("crew", ""),
-            employer = json.optString("employer", "EM"),
             fromCode = json.optString("fromCode", ""),
             toCode = json.optString("toCode", ""),
             outTime = outTimeStr,
-            offTime = json.optString("offTime", ""),
+            offTime = offTimeStr,
             onTime = json.optString("onTime", ""),
             inTime = json.optString("inTime", ""),
             pfFrom = json.optBoolean("pfFrom", true),
@@ -9114,23 +9855,94 @@ fun parseFlightLog(note: com.example.data.EbLogNote): FlightLog? {
             nightTime = json.optString("nightTime", ""),
             blockHours = json.optString("blockHours", ""),
             dateEpoch = epoch,
-            outMinutes = outMin
+            outMinutes = outMin,
+            isSim = json.optBoolean("isSim", false) || json.optString("logType", "").equals("SIM", ignoreCase = true)
         )
+        flightLogParseCache[note.id] = Pair(contentHash, parsed)
+        parsed
     } catch (e: Exception) {
         null
     }
 }
 
 fun compareFlightLogsRecentToOld(log1: FlightLog, log2: FlightLog): Int {
-    val epoch1 = if (log1.dateEpoch != 0L) log1.dateEpoch else (parseLogDate(log1.date)?.time ?: 0L)
-    val epoch2 = if (log2.dateEpoch != 0L) log2.dateEpoch else (parseLogDate(log2.date)?.time ?: 0L)
-    val cmp = epoch2.compareTo(epoch1)
-    if (cmp != 0) return cmp
+    val d1 = if (log1.displayDate != null) {
+        parseLogDate(log1.displayDate)
+    } else if (log1.dateEpoch != 0L) {
+        java.util.Date(log1.dateEpoch)
+    } else {
+        parseLogDate(log1.date)
+    }
 
-    val t1 = if (log1.outMinutes != 0) log1.outMinutes else (convertHHMMToMinutes(ensureHHMMFormat(log1.outTime)) ?: 0)
-    val t2 = if (log2.outMinutes != 0) log2.outMinutes else (convertHHMMToMinutes(ensureHHMMFormat(log2.outTime)) ?: 0)
+    val d2 = if (log2.displayDate != null) {
+        parseLogDate(log2.displayDate)
+    } else if (log2.dateEpoch != 0L) {
+        java.util.Date(log2.dateEpoch)
+    } else {
+        parseLogDate(log2.date)
+    }
+
+    if (d1 != null && d2 != null) {
+        val cal1 = java.util.Calendar.getInstance().apply { time = d1 }
+        val cal2 = java.util.Calendar.getInstance().apply { time = d2 }
+
+        val y1 = cal1.get(java.util.Calendar.YEAR)
+        val y2 = cal2.get(java.util.Calendar.YEAR)
+        if (y1 != y2) {
+            return y2.compareTo(y1) // More recent year first
+        }
+
+        val m1 = cal1.get(java.util.Calendar.MONTH)
+        val m2 = cal2.get(java.util.Calendar.MONTH)
+        if (m1 != m2) {
+            return m2.compareTo(m1) // More recent month first
+        }
+
+        // --- Inside the same month ---
+        // A flight log split across month boundaries:
+        // - Part 1 (splitPart == 1) credits flight time up to 00:00 (midnight) at the end of the starting month.
+        //   It represents the latest chronological flight in that month (active up to 24:00 on the final day).
+        //   Therefore, in Recent-to-Old sort, Part 1 belongs at the TOP of the month list (returns -1).
+        // - Part 2 (splitPart == 2) credits flight time after 00:00 (midnight) on Day 1 of the new month.
+        //   It represents the earliest chronological flight in that month (starting right at 00:00 on Day 1).
+        //   Therefore, in Recent-to-Old sort, Part 2 belongs at the BOTTOM of the month list (returns 1).
+        // When sorting First-to-Last (inverting comparator), Part 1 moves to the BOTTOM and Part 2 moves to the TOP.
+        if (log1.splitPart == 1 && log2.splitPart != 1) return -1
+        if (log2.splitPart == 1 && log1.splitPart != 1) return 1
+        if (log1.splitPart == 2 && log2.splitPart != 2) return 1
+        if (log2.splitPart == 2 && log1.splitPart != 2) return -1
+
+        val day1 = cal1.get(java.util.Calendar.DAY_OF_MONTH)
+        val day2 = cal2.get(java.util.Calendar.DAY_OF_MONTH)
+        if (day1 != day2) {
+            return day2.compareTo(day1) // More recent day first
+        }
+    } else {
+        val epoch1 = d1?.time ?: (if (log1.dateEpoch != 0L) log1.dateEpoch else (parseLogDate(log1.date)?.time ?: 0L))
+        val epoch2 = d2?.time ?: (if (log2.dateEpoch != 0L) log2.dateEpoch else (parseLogDate(log2.date)?.time ?: 0L))
+        val cmp = epoch2.compareTo(epoch1)
+        if (cmp != 0) return cmp
+
+        if (log1.splitPart == 1 && log2.splitPart != 1) return -1
+        if (log2.splitPart == 1 && log1.splitPart != 1) return 1
+        if (log1.splitPart == 2 && log2.splitPart != 2) return 1
+        if (log2.splitPart == 2 && log1.splitPart != 2) return -1
+    }
+
+    val t1 = if (log1.splitPart == 2) 0 else if (log1.outMinutes != 0) log1.outMinutes else {
+        val effectiveTime1 = if (log1.outTime.isNotBlank()) log1.outTime else log1.offTime
+        convertHHMMToMinutes(ensureHHMMFormat(effectiveTime1)) ?: 0
+    }
+    val t2 = if (log2.splitPart == 2) 0 else if (log2.outMinutes != 0) log2.outMinutes else {
+        val effectiveTime2 = if (log2.outTime.isNotBlank()) log2.outTime else log2.offTime
+        convertHHMMToMinutes(ensureHHMMFormat(effectiveTime2)) ?: 0
+    }
     val timeCmp = t2.compareTo(t1)
     if (timeCmp != 0) return timeCmp
+
+    // If both entries are from the same split flight, Part 2 (next month) comes before Part 1 (previous month)
+    val splitCmp = log2.splitPart.compareTo(log1.splitPart)
+    if (splitCmp != 0) return splitCmp
 
     return log2.id.compareTo(log1.id)
 }
@@ -9263,7 +10075,9 @@ fun AddFlightLogPage(
     }
     val allPreviousCrewNames = remember(parsedLogs) {
         parsedLogs.flatMap { log ->
-            log.crew.split(",").map { it.trim() }
+            val (crewPart, traineePart) = parseCrewAndTrainee(log.crew)
+            val crewMembers = crewPart.split(",").map { it.trim() }
+            if (traineePart.isNotBlank()) crewMembers + traineePart else crewMembers
         }
         .filter { it.isNotEmpty() && !it.equals("Self", ignoreCase = true) && it != "-" }
         .distinct()
@@ -9276,6 +10090,39 @@ fun AddFlightLogPage(
         types.filter { it.isNotBlank() }.sorted()
     }
     val lastLog = parsedLogs.firstOrNull() // first is newest since ordered by timestamp DESC
+
+    fun addApproachToAirportDatabase(targetCode: String, approach: String, runway: String = "") {
+        val cleanCode = targetCode.trim().uppercase()
+        val cleanApp = approach.trim()
+        if (cleanCode.isBlank() || cleanApp.isBlank() || cleanApp.equals("None", ignoreCase = true)) return
+
+        val existing = dbAirports.firstOrNull {
+            it.icao.equals(cleanCode, ignoreCase = true) || it.iata.equals(cleanCode, ignoreCase = true)
+        }
+        if (existing == null) {
+            val newAirport = com.example.data.Airport(
+                icao = cleanCode,
+                iata = if (cleanCode.length == 3) cleanCode else "",
+                name = "$cleanCode Airport",
+                country = "",
+                city = "",
+                approaches = cleanApp,
+                longestRunwayDesignator = runway.trim(),
+                longestRunwayLength = "",
+                threats = "",
+                timezone = "UTC",
+                dstAssociated = "No",
+                category = "Cat A"
+            )
+            viewModel.insertAirport(newAirport)
+        } else {
+            val currentList = existing.approaches.split(",").map { it.trim() }.filter { it.isNotBlank() }
+            if (!currentList.any { it.equals(cleanApp, ignoreCase = true) }) {
+                val updated = if (existing.approaches.isBlank()) cleanApp else "${existing.approaches}, $cleanApp"
+                viewModel.insertAirport(existing.copy(approaches = updated))
+            }
+        }
+    }
 
     var activeEditingLog by remember(editingLog) { mutableStateOf(editingLog) }
     val currentLogInList = remember(activeEditingLog, parsedLogs) {
@@ -9341,14 +10188,17 @@ fun AddFlightLogPage(
     var tailNumber by remember(currentLog) { mutableStateOf(currentLog?.tailNumber ?: prefTail) }
     var aircraftType by remember(currentLog) { mutableStateOf(currentLog?.aircraftType ?: "") }
     
+    val (loadedCrewPart, loadedTrainee) = remember(currentLog) {
+        parseCrewAndTrainee(currentLog?.crew ?: "")
+    }
     val crewList = remember(currentLog) {
-        currentLog?.crew?.split(",")?.map { 
+        loadedCrewPart.split(",").map { 
             val trimmed = it.trim()
             if (trimmed == "-") "" else trimmed
-        } ?: emptyList()
+        }
     }
     var crew by remember(currentLog) { mutableStateOf(crewList.firstOrNull() ?: "") }
-    var employer by remember(currentLog) { mutableStateOf(currentLog?.employer ?: "EM") }
+    var traineeName by remember(currentLog) { mutableStateOf(loadedTrainee) }
     
     var fromCode by remember(currentLog) { mutableStateOf(currentLog?.fromCode ?: "") }
     var fromCodeState by remember(currentLog) {
@@ -9424,6 +10274,17 @@ fun AddFlightLogPage(
     }
     var nightTime by remember(currentLog) { mutableStateOf(currentLog?.nightTime ?: "") }
     
+    val initialIsSim = currentLog?.isSim == true
+    var isSim by remember(currentLog) { mutableStateOf(initialIsSim) }
+    var totalSimTime by remember(currentLog) {
+        val initialSim = if (currentLog?.isSim == true) {
+            currentLog.blockHours.ifBlank {
+                if (currentLog.inTime.isNotBlank() && currentLog.inTime != "00:00") currentLog.inTime else ""
+            }
+        } else ""
+        mutableStateOf(initialSim)
+    }
+
     val matchingPrevExp = remember(aircraftType, pilotRole, previousExperiences) {
         previousExperiences.firstOrNull {
             it.aircraftType.isNotBlank() &&
@@ -9435,7 +10296,6 @@ fun AddFlightLogPage(
         }
     }
     
-    var showEmployerDropdown by remember { mutableStateOf(false) }
     var showCrewSelector by remember { mutableStateOf(false) }
     var crewCount by remember(currentLog) { mutableIntStateOf(if (crewList.isEmpty()) prefCrewSize else crewList.size) }
     val additionalCrews = remember(currentLog) {
@@ -9466,6 +10326,7 @@ fun AddFlightLogPage(
     val approachFocusRequester = remember { FocusRequester() }
     val runwayFocusRequester = remember { FocusRequester() }
     val remarksFocusRequester = remember { FocusRequester() }
+    val traineeFocusRequester = remember { FocusRequester() }
     val additionalCrewsFocusRequesters = remember { List(10) { FocusRequester() } }
 
     var isOutTimeFocused by remember { mutableStateOf(false) }
@@ -9474,12 +10335,14 @@ fun AddFlightLogPage(
     var isInTimeFocused by remember { mutableStateOf(false) }
     var isNightTimeFocused by remember { mutableStateOf(false) }
 
+    var savedIsSim by remember(currentLog) { mutableStateOf(initialIsSim) }
+    var savedTotalSimTime by remember(currentLog) { mutableStateOf(totalSimTime) }
     var savedFlightNum by remember(currentLog) { mutableStateOf(flightNum) }
     var savedLogDate by remember(currentLog) { mutableStateOf(logDate) }
     var savedTailNumber by remember(currentLog) { mutableStateOf(tailNumber) }
     var savedAircraftType by remember(currentLog) { mutableStateOf(aircraftType) }
     var savedCrew by remember(currentLog) { mutableStateOf(crew) }
-    var savedEmployer by remember(currentLog) { mutableStateOf(employer) }
+    var savedTrainee by remember(currentLog) { mutableStateOf(traineeName) }
     var savedFromCode by remember(currentLog) { mutableStateOf(fromCode) }
     var savedToCode by remember(currentLog) { mutableStateOf(toCode) }
     var savedOutTime by remember(currentLog) { mutableStateOf(outTime) }
@@ -9500,41 +10363,54 @@ fun AddFlightLogPage(
     var savedAdditionalCrews by remember(currentLog) { mutableStateOf(additionalCrews.toList()) }
 
     val hasChanges = remember(
-        flightNum, logDate, tailNumber, aircraftType, crew, employer, fromCode, toCode,
+        isSim, totalSimTime,
+        flightNum, logDate, tailNumber, aircraftType, crew, traineeName, fromCode, toCode,
         outTime, offTime, onTime, inTime, pfFrom, pfTo, takeoffDay, takeoffNight,
         landingDay, landingNight, approachType, pilotRole, flightRules, remarks, nightTime,
         additionalCrews.toList(),
-        savedFlightNum, savedLogDate, savedTailNumber, savedAircraftType, savedCrew, savedEmployer,
+        savedIsSim, savedTotalSimTime,
+        savedFlightNum, savedLogDate, savedTailNumber, savedAircraftType, savedCrew, savedTrainee,
         savedFromCode, savedToCode, savedOutTime, savedOffTime, savedOnTime, savedInTime,
         savedPfFrom, savedPfTo, savedTakeoffDay, savedTakeoffNight, savedLandingDay,
         savedLandingNight, savedApproachType, savedPilotRole, savedFlightRules, savedRemarks,
         savedNightTime, savedAdditionalCrews
     ) {
         val dateChanged = dateFormatter.format(logDate) != dateFormatter.format(savedLogDate)
-        dateChanged ||
-        flightNum != savedFlightNum ||
-        tailNumber != savedTailNumber ||
-        aircraftType != savedAircraftType ||
-        crew != savedCrew ||
-        employer != savedEmployer ||
-        fromCode != savedFromCode ||
-        toCode != savedToCode ||
-        outTime != savedOutTime ||
-        offTime != savedOffTime ||
-        onTime != savedOnTime ||
-        inTime != savedInTime ||
-        pfFrom != savedPfFrom ||
-        pfTo != savedPfTo ||
-        takeoffDay != savedTakeoffDay ||
-        takeoffNight != savedTakeoffNight ||
-        landingDay != savedLandingDay ||
-        landingNight != savedLandingNight ||
-        approachType != savedApproachType ||
-        pilotRole != savedPilotRole ||
-        flightRules != savedFlightRules ||
-        remarks != savedRemarks ||
-        nightTime != savedNightTime ||
-        additionalCrews.toList() != savedAdditionalCrews
+        if (isSim) {
+            isSim != savedIsSim ||
+            dateChanged ||
+            aircraftType != savedAircraftType ||
+            fromCode != savedFromCode ||
+            toCode != savedToCode ||
+            totalSimTime != savedTotalSimTime ||
+            remarks != savedRemarks
+        } else {
+            isSim != savedIsSim ||
+            dateChanged ||
+            flightNum != savedFlightNum ||
+            tailNumber != savedTailNumber ||
+            aircraftType != savedAircraftType ||
+            crew != savedCrew ||
+            traineeName != savedTrainee ||
+            fromCode != savedFromCode ||
+            toCode != savedToCode ||
+            outTime != savedOutTime ||
+            offTime != savedOffTime ||
+            onTime != savedOnTime ||
+            inTime != savedInTime ||
+            pfFrom != savedPfFrom ||
+            pfTo != savedPfTo ||
+            takeoffDay != savedTakeoffDay ||
+            takeoffNight != savedTakeoffNight ||
+            landingDay != savedLandingDay ||
+            landingNight != savedLandingNight ||
+            approachType != savedApproachType ||
+            pilotRole != savedPilotRole ||
+            flightRules != savedFlightRules ||
+            remarks != savedRemarks ||
+            nightTime != savedNightTime ||
+            additionalCrews.toList() != savedAdditionalCrews
+        }
     }
 
     val onNavigate = { action: () -> Unit ->
@@ -9583,6 +10459,83 @@ fun AddFlightLogPage(
     fun performSave(onSuccess: () -> Unit) {
         scope.launch(Dispatchers.IO) {
             try {
+                if (isSim) {
+                    if (aircraftType.isBlank()) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Aircraft Type is required for simulator session", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+                    if (fromCode.isBlank()) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Departure (DEP) is required", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+                    if (toCode.isBlank()) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Arrival (ARR) is required", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+                    val simMinutes = parseBlockMinutesFromLog(totalSimTime)
+                    if (simMinutes == null || simMinutes <= 0) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Please enter valid Total Sim Time (e.g. 02:00)", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+                    val formattedSim = ensureHHMMFormat(totalSimTime)
+                    val shortType = convertToShortAircraftCode(aircraftType)
+                    val json = org.json.JSONObject().apply {
+                        put("isSim", true)
+                        put("logType", "SIM")
+                        put("flightNum", if (flightNum.isNotBlank()) flightNum else "SIM")
+                        put("date", dateFormatter.format(logDate))
+                        put("tailNumber", if (tailNumber.isNotBlank()) tailNumber else "SIM")
+                        put("aircraftType", shortType)
+                        put("crew", "Self")
+                        put("fromCode", fromCode.uppercase().trim())
+                        put("toCode", toCode.uppercase().trim())
+                        put("outTime", "00:00")
+                        put("offTime", "00:00")
+                        put("onTime", formattedSim)
+                        put("inTime", formattedSim)
+                        put("pfFrom", true)
+                        put("pfTo", true)
+                        put("takeoffDay", 0)
+                        put("takeoffNight", 0)
+                        put("landingDay", 0)
+                        put("landingNight", 0)
+                        put("approachType", "")
+                        put("pilotRole", pilotRole.ifBlank { "PIC" })
+                        put("flightRules", "IFR")
+                        put("remarks", remarks)
+                        put("nightTime", "")
+                        put("blockHours", formattedSim)
+                    }
+
+                    val currentRawNoteId = activeEditingLog?.rawNoteId
+                    if (currentRawNoteId != null) {
+                        viewModel.updateNote(currentRawNoteId, "FLIGHTLOG::$json")
+                    } else {
+                        viewModel.insertNote("FLIGHTLOG::$json")
+                    }
+                    val toastMsg = "Simulator Session Saved Successfully"
+                    withContext(Dispatchers.Main) {
+                        savedLogDate = logDate
+                        savedAircraftType = aircraftType
+                        savedFromCode = fromCode
+                        savedToCode = toCode
+                        savedTotalSimTime = totalSimTime
+                        savedRemarks = remarks
+                        savedIsSim = true
+                        Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                        onSuccess()
+                    }
+                    return@launch
+                }
+
                 val formattedOut = if (outTime.isBlank()) "" else ensureHHMMFormat(outTime)
                 val formattedOff = if (offTime.isBlank()) "" else ensureHHMMFormat(offTime)
                 val formattedOn = if (onTime.isBlank()) "" else ensureHHMMFormat(onTime)
@@ -9591,9 +10544,7 @@ fun AddFlightLogPage(
 
                 val calcMin = calculateTimeDiffInMinutes(formattedOut, formattedIn)
                 val blockHStr = if (calcMin != null) {
-                    val calcHours = calcMin / 60.0
-                    val calcHoursRounded = Math.round(calcHours * 100.0) / 100.0
-                    String.format(Locale.US, "%.2f", calcHoursRounded)
+                    formatMinutesToHoursClean(calcMin)
                 } else {
                     ""
                 }
@@ -9607,13 +10558,26 @@ fun AddFlightLogPage(
                     viewModel.insertAircraft(newAircraft)
                 }
 
+                val targetAirportCode = if (toCode.isNotBlank()) toCode else fromCode
+                val cleanApp = baseApproach.ifBlank { approachType }.substringBefore(" - Rwy ").trim()
+                if (targetAirportCode.isNotBlank() && cleanApp.isNotBlank() && !cleanApp.equals("None", ignoreCase = true)) {
+                    addApproachToAirportDatabase(targetAirportCode, cleanApp, selectedRwy)
+                }
+
                 val json = org.json.JSONObject().apply {
+                    put("isSim", false)
+                    put("logType", "FLIGHT")
                     put("flightNum", flightNum)
                     put("date", dateFormatter.format(logDate))
                     put("tailNumber", tailNumber)
                     put("aircraftType", shortType)
-                    put("crew", (listOf("Self") + additionalCrews).map { if (it.isBlank()) "-" else it.trim() }.joinToString(", "))
-                    put("employer", employer)
+                    val crewString = (listOf("Self") + additionalCrews).map { if (it.isBlank()) "-" else it.trim() }.joinToString(", ")
+                    val finalCrew = if (isFlightInstructorRole(pilotRole) && traineeName.isNotBlank()) {
+                        formatCrewWithTrainee(crewString, traineeName)
+                    } else {
+                        crewString
+                    }
+                    put("crew", finalCrew)
                     put("fromCode", fromCode)
                     put("toCode", toCode)
                     put("outTime", formattedOut)
@@ -9642,12 +10606,13 @@ fun AddFlightLogPage(
                 }
                 val toastMsg = if (flightNum.isBlank()) "Flight Log Saved Successfully" else "Flight Log $flightNum Saved Successfully"
                 withContext(Dispatchers.Main) {
+                    savedIsSim = false
                     savedFlightNum = flightNum
                     savedLogDate = logDate
                     savedTailNumber = tailNumber
                     savedAircraftType = aircraftType
                     savedCrew = crew
-                    savedEmployer = employer
+                    savedTrainee = traineeName
                     savedFromCode = fromCode
                     savedToCode = toCode
                     savedOutTime = outTime
@@ -9720,6 +10685,7 @@ fun AddFlightLogPage(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .imePadding()
     ) {
         if (isEditing) {
             EditFlightNavigationMenu(
@@ -9731,38 +10697,138 @@ fun AddFlightLogPage(
                 isPrevEnabled = currentIndex < navigationLogs.size - 1,
                 testTagPrefix = "top"
             )
-        } else {
-            // Cancel/Back header with '<' button
+            // Type locked indicator banner when editing (type cannot be changed once entered)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .padding(bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .background(if (isSim) Color(0xFFFFB300).copy(alpha = 0.15f) else Color(0xFF3B82F6).copy(alpha = 0.15f))
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                IconButton(
-                    onClick = {
-                        if (hasChanges) {
-                            showDiscardConfirm = true
-                        } else {
-                            onDismiss()
-                        }
-                    },
-                    modifier = Modifier.size(44.dp).testTag("add_back_btn")
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = if (isSim) Color(0xFFFFB300) else Color(0xFF60A5FA),
+                        modifier = Modifier.size(14.dp)
+                    )
                     Text(
-                        text = "<",
-                        color = Color.White,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 24.sp
+                        text = if (isSim) "SIMULATOR SESSION" else "AIRCRAFT FLIGHT LOG",
+                        color = if (isSim) Color(0xFFFFB300) else Color(0xFF60A5FA),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Add Flight Log",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White
+                    text = "Type locked when editing",
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 10.sp
                 )
+            }
+        } else {
+            // Cancel/Back header with '<' button, Flight/Sim toggle next to title, and Save button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            if (hasChanges) {
+                                showDiscardConfirm = true
+                            } else {
+                                onDismiss()
+                            }
+                        },
+                        modifier = Modifier.size(40.dp).testTag("add_back_btn")
+                    ) {
+                        Text(
+                            text = "<",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 24.sp
+                        )
+                    }
+                    Text(
+                        text = if (isSim) "Sim Log" else "Flight Log",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+
+                    // Toggle for Flight / Sim next to Flight Log on top
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF2A3441))
+                            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(20.dp))
+                            .padding(2.dp)
+                            .testTag("log_type_toggle"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(if (!isSim) Color(0xFF3B82F6) else Color.Transparent)
+                                .clickable { isSim = false }
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                                .testTag("toggle_flight_btn"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Flight",
+                                color = if (!isSim) Color.White else Color.White.copy(alpha = 0.5f),
+                                fontSize = 11.sp,
+                                fontWeight = if (!isSim) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(if (isSim) Color(0xFFFFB300) else Color.Transparent)
+                                .clickable { isSim = true }
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                                .testTag("toggle_sim_btn"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Sim",
+                                color = if (isSim) Color(0xFF1E293B) else Color.White.copy(alpha = 0.5f),
+                                fontSize = 11.sp,
+                                fontWeight = if (isSim) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        performSave {
+                            onSaveSuccess()
+                        }
+                    },
+                    modifier = Modifier
+                        .height(38.dp)
+                        .testTag("add_top_save_flight_log_btn"),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFFB300), // Amber Gold
+                        contentColor = Color(0xFF1E293B)
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                ) {
+                    Text(
+                        text = if (isSim) "Save Sim" else "Save Flight Log",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
 
@@ -9779,14 +10845,722 @@ fun AddFlightLogPage(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (isSim) {
+                // --- SIMULATOR SESSION FORM (Required fields only: Date, Aircraft Type, Dep, Arr, Total Sim Time, Remarks) ---
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
+                    border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.4f))
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        // Row 1: Date
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .clickable { showLogDatePicker = true }
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(
+                                    imageVector = Icons.Default.DateRange,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFB300),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text("Date *", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    text = "<",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    modifier = Modifier
+                                        .clickable { logDate = Date(logDate.time - 24 * 3600 * 1000) }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    text = dateFormatter.format(logDate),
+                                    color = Color(0xFF3CD070),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    text = ">",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    modifier = Modifier
+                                        .clickable { logDate = Date(logDate.time + 24 * 3600 * 1000) }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
 
-            // --- GROUP 1: Date, Flight#, Reg, Crew ---
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
-        ) {
+                        Divider(color = Color.White.copy(alpha = 0.12f))
+
+                        // Row 2: Aircraft Type
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Aircraft Type *",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(96.dp)
+                            )
+                            Divider(modifier = Modifier.fillMaxHeight().width(1.dp), color = Color.White.copy(alpha = 0.12f))
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            var showSimTypeDropdown by remember { mutableStateOf(false) }
+                            val availableAircraftTypes = remember(dbAircraftTypes, aircraftsList, parsedLogs) {
+                                val map = linkedMapOf<String, String>()
+                                dbAircraftTypes.forEach { type ->
+                                    if (type.code.isNotBlank()) {
+                                        map[type.code.uppercase()] = type.name.ifBlank { type.code.uppercase() }
+                                    }
+                                }
+                                aircraftsList.forEach { ac ->
+                                    val t = ac.type.trim().uppercase()
+                                    if (t.isNotBlank() && !map.containsKey(t)) {
+                                        map[t] = t
+                                    }
+                                }
+                                parsedLogs.forEach { log ->
+                                    val t = log.aircraftType.trim().uppercase()
+                                    if (t.isNotBlank() && !map.containsKey(t)) {
+                                        map[t] = t
+                                    }
+                                }
+                                val standardTypes = listOf(
+                                    "A320" to "Airbus A320",
+                                    "A321" to "Airbus A321",
+                                    "A330" to "Airbus A330",
+                                    "A350" to "Airbus A350",
+                                    "B737" to "Boeing 737",
+                                    "B738" to "Boeing 737-800",
+                                    "B777" to "Boeing 777",
+                                    "B787" to "Boeing 787",
+                                    "C172" to "Cessna 172 Skyhawk",
+                                    "PA28" to "Piper PA-28 Cherokee",
+                                    "DA40" to "Diamond DA40",
+                                    "DA42" to "Diamond DA42 Twin Star",
+                                    "SR22" to "Cirrus SR22",
+                                    "AT72" to "ATR 72",
+                                    "B744" to "Boeing 747-400"
+                                )
+                                standardTypes.forEach { (code, name) ->
+                                    if (!map.containsKey(code)) {
+                                        map[code] = name
+                                    }
+                                }
+                                map
+                            }
+
+                            Box(modifier = Modifier.weight(1f)) {
+                                BorderlessTextField(
+                                    value = aircraftType,
+                                    onValueChange = { newVal ->
+                                        aircraftType = newVal.uppercase()
+                                        onEdited()
+                                    },
+                                    placeholder = "e.g. A320 / B738",
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Text,
+                                        imeAction = ImeAction.Next
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onNext = { depFocusRequester.requestFocus() }
+                                    ),
+                                    modifier = Modifier.fillMaxWidth().testTag("sim_aircraft_type_input")
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { showSimTypeDropdown = !showSimTypeDropdown },
+                                modifier = Modifier.size(36.dp).testTag("sim_aircraft_type_dropdown_btn")
+                            ) {
+                                Icon(
+                                    imageVector = if (showSimTypeDropdown) Icons.Default.KeyboardArrowUp else Icons.Default.ArrowDropDown,
+                                    contentDescription = "Toggle Aircraft Type Dropdown",
+                                    tint = Color(0xFFFFB300)
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = showSimTypeDropdown,
+                                onDismissRequest = { showSimTypeDropdown = false },
+                                modifier = Modifier
+                                    .background(Color(0xFF1E2530))
+                                    .widthIn(min = 240.dp, max = 320.dp)
+                                    .heightIn(max = 360.dp)
+                            ) {
+                                Text(
+                                    text = "SELECT SIMULATOR AIRCRAFT",
+                                    color = Color(0xFFFFB300),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                                availableAircraftTypes.forEach { (code, name) ->
+                                    val isSelected = aircraftType.equals(code, ignoreCase = true)
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f, fill = false)) {
+                                                    Text(
+                                                        text = code,
+                                                        color = if (isSelected) Color(0xFFFFB300) else Color.White,
+                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                                        fontSize = 13.sp
+                                                    )
+                                                    if (name.isNotBlank() && !name.equals(code, ignoreCase = true)) {
+                                                        Text(
+                                                            text = name,
+                                                            color = Color.White.copy(alpha = 0.5f),
+                                                            fontSize = 11.sp,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                }
+                                                if (isSelected) {
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = "Selected",
+                                                        tint = Color(0xFFFFB300),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onClick = {
+                                            aircraftType = code
+                                            showSimTypeDropdown = false
+                                            onEdited()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. DEP & ARR Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth().height(92.dp)) {
+                            // DEP Column
+                            var showDepContextMenu by remember { mutableStateOf(false) }
+                            var depContextMenuPos by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                            Column(
+                                modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    androidx.compose.foundation.text.BasicTextField(
+                                        value = fromCodeState,
+                                        onValueChange = { newVal ->
+                                            val oldVal = fromCodeState.text
+                                            val upper = newVal.text.uppercase()
+                                            fromCodeState = newVal.copy(text = upper)
+                                            fromCode = upper
+                                            if (upper.length == 4 && upper.length > oldVal.length) {
+                                                arrFocusRequester.requestFocus()
+                                            }
+                                        },
+                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 32.sp,
+                                            textAlign = TextAlign.Center
+                                        ),
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(
+                                            keyboardType = KeyboardType.Text,
+                                            imeAction = ImeAction.Next
+                                        ),
+                                        keyboardActions = KeyboardActions(
+                                            onNext = { arrFocusRequester.requestFocus() }
+                                        ),
+                                        modifier = Modifier
+                                            .bringIntoViewOnFocus()
+                                            .focusRequester(depFocusRequester)
+                                            .doubleTapSelectAll(
+                                                text = fromCodeState.text,
+                                                focusRequester = depFocusRequester,
+                                                onSelectAll = {
+                                                    fromCodeState = fromCodeState.copy(
+                                                        selection = androidx.compose.ui.text.TextRange(0, fromCodeState.text.length)
+                                                    )
+                                                },
+                                                onLongPress = { pos ->
+                                                    depContextMenuPos = pos
+                                                    showDepContextMenu = true
+                                                }
+                                            ),
+                                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFFFFB300)),
+                                        decorationBox = { innerTextField ->
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                if (fromCode.isEmpty()) {
+                                                    Text(
+                                                        text = "DEP *",
+                                                        color = Color.White.copy(alpha = 0.3f),
+                                                        fontSize = 32.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        textAlign = TextAlign.Center
+                                                    )
+                                                }
+                                                innerTextField()
+                                            }
+                                        }
+                                    )
+                                    TextBoxContextMenu(
+                                        expanded = showDepContextMenu,
+                                        onDismissRequest = { showDepContextMenu = false },
+                                        position = depContextMenuPos,
+                                        canCopy = fromCodeState.text.isNotEmpty(),
+                                        canPaste = clipboardManager.hasText(),
+                                        canCut = fromCodeState.text.isNotEmpty(),
+                                        canSelectAll = fromCodeState.text.isNotEmpty() && fromCodeState.selection.length < fromCodeState.text.length,
+                                        canClear = fromCodeState.text.isNotEmpty(),
+                                        onCopy = {
+                                            val sel = fromCodeState.selection
+                                            val txt = if (sel.length > 0) fromCodeState.text.substring(sel.min, sel.max) else fromCodeState.text
+                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(txt))
+                                        },
+                                        onPaste = {
+                                            val clip = clipboardManager.getText()?.text?.uppercase() ?: ""
+                                            fromCodeState = androidx.compose.ui.text.input.TextFieldValue(clip, androidx.compose.ui.text.TextRange(clip.length))
+                                            fromCode = clip
+                                        },
+                                        onCut = {
+                                            val sel = fromCodeState.selection
+                                            val txt = if (sel.length > 0) fromCodeState.text.substring(sel.min, sel.max) else fromCodeState.text
+                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(txt))
+                                            if (sel.length > 0) {
+                                                val newText = fromCodeState.text.removeRange(sel.min, sel.max)
+                                                fromCodeState = androidx.compose.ui.text.input.TextFieldValue(newText, androidx.compose.ui.text.TextRange(sel.min))
+                                                fromCode = newText
+                                            } else {
+                                                fromCodeState = androidx.compose.ui.text.input.TextFieldValue("", androidx.compose.ui.text.TextRange(0))
+                                                fromCode = ""
+                                            }
+                                        },
+                                        onSelectAll = {
+                                            fromCodeState = fromCodeState.copy(selection = androidx.compose.ui.text.TextRange(0, fromCodeState.text.length))
+                                        },
+                                        onClear = {
+                                            fromCodeState = androidx.compose.ui.text.input.TextFieldValue("", androidx.compose.ui.text.TextRange(0))
+                                            fromCode = ""
+                                        }
+                                    )
+                                }
+                                val depAirport = remember(fromCode, dbAirports) {
+                                    dbAirports.firstOrNull { it.icao.equals(fromCode, ignoreCase = true) || it.iata.equals(fromCode, ignoreCase = true) }
+                                }
+                                Text(
+                                    text = depAirport?.name ?: "Departure Airport",
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Divider(modifier = Modifier.fillMaxHeight().width(1.dp), color = Color.White.copy(alpha = 0.12f))
+
+                            // ARR Column
+                            var showArrContextMenu by remember { mutableStateOf(false) }
+                            var arrContextMenuPos by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                            Column(
+                                modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    androidx.compose.foundation.text.BasicTextField(
+                                        value = toCodeState,
+                                        onValueChange = { newVal ->
+                                            val upper = newVal.text.uppercase()
+                                            toCodeState = newVal.copy(text = upper)
+                                            toCode = upper
+                                        },
+                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 32.sp,
+                                            textAlign = TextAlign.Center
+                                        ),
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(
+                                            keyboardType = KeyboardType.Text,
+                                            imeAction = ImeAction.Next
+                                        ),
+                                        keyboardActions = KeyboardActions(
+                                            onNext = { /* done */ }
+                                        ),
+                                        modifier = Modifier
+                                            .bringIntoViewOnFocus()
+                                            .focusRequester(arrFocusRequester)
+                                            .doubleTapSelectAll(
+                                                text = toCodeState.text,
+                                                focusRequester = arrFocusRequester,
+                                                onSelectAll = {
+                                                    toCodeState = toCodeState.copy(
+                                                        selection = androidx.compose.ui.text.TextRange(0, toCodeState.text.length)
+                                                    )
+                                                },
+                                                onLongPress = { pos ->
+                                                    arrContextMenuPos = pos
+                                                    showArrContextMenu = true
+                                                }
+                                            ),
+                                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFFFFB300)),
+                                        decorationBox = { innerTextField ->
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                if (toCode.isEmpty()) {
+                                                    Text(
+                                                        text = "ARR *",
+                                                        color = Color.White.copy(alpha = 0.3f),
+                                                        fontSize = 32.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        textAlign = TextAlign.Center
+                                                    )
+                                                }
+                                                innerTextField()
+                                            }
+                                        }
+                                    )
+                                    TextBoxContextMenu(
+                                        expanded = showArrContextMenu,
+                                        onDismissRequest = { showArrContextMenu = false },
+                                        position = arrContextMenuPos,
+                                        canCopy = toCodeState.text.isNotEmpty(),
+                                        canPaste = clipboardManager.hasText(),
+                                        canCut = toCodeState.text.isNotEmpty(),
+                                        canSelectAll = toCodeState.text.isNotEmpty() && toCodeState.selection.length < toCodeState.text.length,
+                                        canClear = toCodeState.text.isNotEmpty(),
+                                        onCopy = {
+                                            val sel = toCodeState.selection
+                                            val txt = if (sel.length > 0) toCodeState.text.substring(sel.min, sel.max) else toCodeState.text
+                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(txt))
+                                        },
+                                        onPaste = {
+                                            val clip = clipboardManager.getText()?.text?.uppercase() ?: ""
+                                            toCodeState = androidx.compose.ui.text.input.TextFieldValue(clip, androidx.compose.ui.text.TextRange(clip.length))
+                                            toCode = clip
+                                        },
+                                        onCut = {
+                                            val sel = toCodeState.selection
+                                            val txt = if (sel.length > 0) toCodeState.text.substring(sel.min, sel.max) else toCodeState.text
+                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(txt))
+                                            if (sel.length > 0) {
+                                                val newText = toCodeState.text.removeRange(sel.min, sel.max)
+                                                toCodeState = androidx.compose.ui.text.input.TextFieldValue(newText, androidx.compose.ui.text.TextRange(sel.min))
+                                                toCode = newText
+                                            } else {
+                                                toCodeState = androidx.compose.ui.text.input.TextFieldValue("", androidx.compose.ui.text.TextRange(0))
+                                                toCode = ""
+                                            }
+                                        },
+                                        onSelectAll = {
+                                            toCodeState = toCodeState.copy(selection = androidx.compose.ui.text.TextRange(0, toCodeState.text.length))
+                                        },
+                                        onClear = {
+                                            toCodeState = androidx.compose.ui.text.input.TextFieldValue("", androidx.compose.ui.text.TextRange(0))
+                                            toCode = ""
+                                        }
+                                    )
+                                }
+                                val arrAirport = remember(toCode, dbAirports) {
+                                    dbAirports.firstOrNull { it.icao.equals(toCode, ignoreCase = true) || it.iata.equals(toCode, ignoreCase = true) }
+                                }
+                                Text(
+                                    text = arrAirport?.name ?: "Arrival Airport",
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. Total Sim Time Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
+                    border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.4f))
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Icon(
+                                    imageVector = Icons.Default.Timer,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFB300),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "TOTAL SIM TIME *",
+                                    color = Color(0xFFFFB300),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFFFB300).copy(alpha = 0.15f)
+                            ) {
+                                Text(
+                                    text = "FLIGHT SIM FOR PRINT",
+                                    color = Color(0xFFFFB300),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = totalSimTime,
+                                onValueChange = { newVal ->
+                                    totalSimTime = newVal
+                                    onEdited()
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("total_sim_time_input")
+                                    .onFocusChanged { focusState ->
+                                        if (!focusState.isFocused && totalSimTime.isNotBlank()) {
+                                            totalSimTime = autoFormatTime(totalSimTime)
+                                        }
+                                    },
+                                placeholder = { Text("02:30 or 2.5", color = Color.White.copy(alpha = 0.35f)) },
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = Color.White,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number,
+                                    imeAction = ImeAction.Next
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onNext = { remarksFocusRequester.requestFocus() }
+                                ),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFFFFB300),
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                                    focusedLabelColor = Color(0xFFFFB300),
+                                    cursorColor = Color(0xFFFFB300)
+                                )
+                            )
+
+                            // Quick session hour chips
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf("01:30", "02:00", "03:00", "04:00").forEach { quickTime ->
+                                    Surface(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                totalSimTime = quickTime
+                                                onEdited()
+                                            },
+                                        color = Color(0xFF2A3441),
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+                                    ) {
+                                        Text(
+                                            text = quickTime,
+                                            color = Color.White.copy(alpha = 0.85f),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 4. Remarks Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth().height(64.dp)) {
+                            Box(
+                                modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Remarks",
+                                    color = Color.White.copy(alpha = 0.4f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Divider(modifier = Modifier.fillMaxHeight().width(1.dp), color = Color.White.copy(alpha = 0.12f))
+                            var showSimRemarksContextMenu by remember { mutableStateOf(false) }
+                            var simRemarksContextMenuPos by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                            Box(
+                                modifier = Modifier.weight(2.5f).fillMaxHeight().padding(6.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                androidx.compose.foundation.text.BasicTextField(
+                                    value = remarksState,
+                                    onValueChange = { newVal ->
+                                        remarksState = newVal
+                                        remarks = newVal.text
+                                        onEdited()
+                                    },
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
+                                    modifier = Modifier
+                                        .bringIntoViewOnFocus()
+                                        .focusRequester(remarksFocusRequester)
+                                        .doubleTapSelectAll(
+                                            text = remarksState.text,
+                                            focusRequester = remarksFocusRequester,
+                                            onSelectAll = {
+                                                remarksState = remarksState.copy(
+                                                    selection = androidx.compose.ui.text.TextRange(0, remarksState.text.length)
+                                                )
+                                            },
+                                            onLongPress = { pos ->
+                                                simRemarksContextMenuPos = pos
+                                                showSimRemarksContextMenu = true
+                                            }
+                                        )
+                                        .fillMaxSize(),
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Text,
+                                        imeAction = ImeAction.Done
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onDone = { focusManager.clearFocus() }
+                                    ),
+                                    cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
+                                    decorationBox = { innerTextField ->
+                                        if (remarksState.text.isEmpty()) {
+                                            Text("Enter sim session remarks (e.g. FFS Level D recurrent training)...", color = Color.White.copy(alpha = 0.3f), fontSize = 12.sp)
+                                        }
+                                        innerTextField()
+                                    }
+                                )
+
+                                TextBoxContextMenu(
+                                    expanded = showSimRemarksContextMenu,
+                                    onDismissRequest = { showSimRemarksContextMenu = false },
+                                    position = simRemarksContextMenuPos,
+                                    canCopy = remarksState.text.isNotEmpty(),
+                                    canPaste = clipboardManager.hasText(),
+                                    canCut = remarksState.text.isNotEmpty(),
+                                    canSelectAll = remarksState.text.isNotEmpty() && remarksState.selection.length < remarksState.text.length,
+                                    canClear = remarksState.text.isNotEmpty(),
+                                    onCopy = {
+                                        val sel = remarksState.selection
+                                        val txt = if (sel.length > 0) remarksState.text.substring(sel.min, sel.max) else remarksState.text
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(txt))
+                                    },
+                                    onPaste = {
+                                        val clip = clipboardManager.getText()?.text ?: ""
+                                        val selStart = remarksState.selection.min
+                                        val selEnd = remarksState.selection.max
+                                        val currentText = remarksState.text
+                                        val newText = if (selStart != selEnd) {
+                                            currentText.replaceRange(selStart, selEnd, clip)
+                                        } else {
+                                            val cursor = remarksState.selection.start.coerceIn(0, currentText.length)
+                                            currentText.substring(0, cursor) + clip + currentText.substring(cursor)
+                                        }
+                                        val newCursor = (if (selStart != selEnd) selStart else remarksState.selection.start) + clip.length
+                                        remarksState = androidx.compose.ui.text.input.TextFieldValue(newText, androidx.compose.ui.text.TextRange(newCursor))
+                                        remarks = newText
+                                        onEdited()
+                                    },
+                                    onCut = {
+                                        val sel = remarksState.selection
+                                        val txt = if (sel.length > 0) remarksState.text.substring(sel.min, sel.max) else remarksState.text
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(txt))
+                                        if (sel.length > 0) {
+                                            val newText = remarksState.text.removeRange(sel.min, sel.max)
+                                            remarksState = androidx.compose.ui.text.input.TextFieldValue(newText, androidx.compose.ui.text.TextRange(sel.min))
+                                            remarks = newText
+                                            onEdited()
+                                        } else {
+                                            remarksState = androidx.compose.ui.text.input.TextFieldValue("", androidx.compose.ui.text.TextRange(0))
+                                            remarks = ""
+                                            onEdited()
+                                        }
+                                    },
+                                    onSelectAll = {
+                                        remarksState = remarksState.copy(selection = androidx.compose.ui.text.TextRange(0, remarksState.text.length))
+                                    },
+                                    onClear = {
+                                        remarksState = androidx.compose.ui.text.input.TextFieldValue("", androidx.compose.ui.text.TextRange(0))
+                                        remarks = ""
+                                        onEdited()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                // --- AIRCRAFT FLIGHT LOG FORM (GROUP 1 to 6) ---
+                // --- GROUP 1: Date, Flight#, Reg, Crew ---
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2530)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+                ) {
             Column(modifier = Modifier.fillMaxWidth()) {
 
                 // Row 1 (Date | Flight#)
@@ -10087,13 +11861,32 @@ fun AddFlightLogPage(
                 Divider(color = Color.White.copy(alpha = 0.12f))
 
                 // Row 3 (Crew Names - Merged Columns)
+                val fullCrewSummary = remember(additionalCrews.toList(), traineeName, pilotRole) {
+                    val list = listOf("Self") + additionalCrews.filter { it.isNotBlank() }
+                    val baseCrew = list.joinToString(", ")
+                    if (isFlightInstructorRole(pilotRole) && traineeName.isNotBlank()) {
+                        "$baseCrew (Trainee: $traineeName)"
+                    } else {
+                        baseCrew
+                    }
+                }
                 Row(modifier = Modifier.fillMaxWidth().height(52.dp)) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight().padding(horizontal = 8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillMaxHeight()
+                            .clickable { showCrewSelector = !showCrewSelector }
+                            .padding(horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.People,
+                            contentDescription = "Crew",
+                            tint = Color(0xFFFFB300),
+                            modifier = Modifier.size(20.dp).padding(end = 4.dp)
+                        )
                         BorderlessTextField(
-                            value = "Self",
+                            value = fullCrewSummary,
                             onValueChange = {},
                             enabled = false,
                             placeholder = "Crew Names",
@@ -10165,6 +11958,7 @@ fun AddFlightLogPage(
                     
                     // N - 1 crew entry boxes
                     additionalCrews.forEachIndexed { index, name ->
+                        var showCrewDropdownForField by remember { mutableStateOf(false) }
                         Divider(color = Color.White.copy(alpha = 0.12f))
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
@@ -10190,6 +11984,8 @@ fun AddFlightLogPage(
                                             onNext = {
                                                 if (index + 1 < additionalCrews.size) {
                                                     additionalCrewsFocusRequesters[index + 1].requestFocus()
+                                                } else if (isFlightInstructorRole(pilotRole)) {
+                                                    traineeFocusRequester.requestFocus()
                                                 } else {
                                                     depFocusRequester.requestFocus()
                                                 }
@@ -10197,6 +11993,57 @@ fun AddFlightLogPage(
                                         ),
                                         modifier = Modifier.focusRequester(additionalCrewsFocusRequesters[index]).fillMaxWidth()
                                     )
+                                }
+                                // Dropdown option to show crew list
+                                Box {
+                                    IconButton(
+                                        onClick = { showCrewDropdownForField = true }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowDropDown,
+                                            contentDescription = "Show Crew List",
+                                            tint = Color(0xFFFFB300)
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = showCrewDropdownForField,
+                                        onDismissRequest = { showCrewDropdownForField = false },
+                                        modifier = Modifier
+                                            .background(Color(0xFF1E2530))
+                                            .heightIn(max = 260.dp)
+                                            .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                    ) {
+                                        if (allPreviousCrewNames.isEmpty()) {
+                                            DropdownMenuItem(
+                                                text = { Text("No previous crew found", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp) },
+                                                onClick = { showCrewDropdownForField = false }
+                                            )
+                                        } else {
+                                            allPreviousCrewNames.forEach { previousCrew ->
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Person,
+                                                                contentDescription = null,
+                                                                tint = Color(0xFFFFB300),
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                            Text(previousCrew, color = Color.White, fontSize = 13.sp)
+                                                        }
+                                                    },
+                                                    onClick = {
+                                                        additionalCrews[index] = previousCrew
+                                                        onEdited()
+                                                        showCrewDropdownForField = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                                 IconButton(
                                     onClick = {
@@ -10216,7 +12063,9 @@ fun AddFlightLogPage(
                             }
                             
                             val suggestions = remember(name, allPreviousCrewNames) {
-                                if (name.isBlank()) emptyList() else {
+                                if (name.isBlank()) {
+                                    allPreviousCrewNames
+                                } else {
                                     allPreviousCrewNames.filter {
                                         it.contains(name, ignoreCase = true) && !it.equals(name, ignoreCase = true)
                                     }
@@ -10232,7 +12081,7 @@ fun AddFlightLogPage(
                                         .padding(horizontal = 12.dp, vertical = 6.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    items(suggestions.take(5), key = { it }) { sug ->
+                                    items(suggestions.take(8), key = { it }) { sug ->
                                         SuggestionChip(
                                             onClick = {
                                                 additionalCrews[index] = sug
@@ -10245,6 +12094,100 @@ fun AddFlightLogPage(
                                             )
                                         )
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (isFlightInstructorRole(pilotRole)) {
+                    Divider(color = Color.White.copy(alpha = 0.12f))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("flight_log_trainee_section")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.School,
+                                contentDescription = "Trainee",
+                                tint = Color(0xFFF59E0B),
+                                modifier = Modifier.size(20.dp).padding(end = 4.dp)
+                            )
+                            Box(modifier = Modifier.weight(1f)) {
+                                BorderlessTextField(
+                                    value = traineeName,
+                                    onValueChange = { newVal ->
+                                        traineeName = newVal
+                                        onEdited()
+                                    },
+                                    placeholder = "Trainee",
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Text,
+                                        imeAction = ImeAction.Next
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onNext = { depFocusRequester.requestFocus() }
+                                    ),
+                                    modifier = Modifier
+                                        .focusRequester(traineeFocusRequester)
+                                        .fillMaxWidth()
+                                        .testTag("flight_log_trainee_input")
+                                )
+                            }
+                            if (traineeName.isNotBlank()) {
+                                IconButton(
+                                    onClick = {
+                                        traineeName = ""
+                                        onEdited()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Clear Trainee",
+                                        tint = Color.White.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+                        }
+
+                        val traineeSuggestions = remember(traineeName, allPreviousCrewNames) {
+                            if (traineeName.isBlank()) {
+                                allPreviousCrewNames
+                            } else {
+                                allPreviousCrewNames.filter {
+                                    it.contains(traineeName, ignoreCase = true) && !it.equals(traineeName, ignoreCase = true)
+                                }
+                            }
+                        }
+
+                        if (traineeSuggestions.isNotEmpty()) {
+                            Divider(color = Color.White.copy(alpha = 0.08f))
+                            LazyRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color.White.copy(alpha = 0.02f))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(traineeSuggestions.take(8), key = { it }) { sug ->
+                                    SuggestionChip(
+                                        onClick = {
+                                            traineeName = sug
+                                            onEdited()
+                                        },
+                                        label = { Text(sug, color = Color(0xFFF59E0B), fontSize = 12.sp) },
+                                        border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.5f)),
+                                        colors = SuggestionChipDefaults.suggestionChipColors(
+                                            containerColor = Color(0xFF1E2530)
+                                        )
+                                    )
                                 }
                             }
                         }
@@ -11178,6 +13121,12 @@ fun AddFlightLogPage(
                                     onValueChange = { 
                                         baseApproach = it 
                                         onEdited()
+                                        if (it.trim().length >= 2) {
+                                            val targetAirportCode = if (toCode.isNotBlank()) toCode else fromCode
+                                            if (targetAirportCode.isNotBlank()) {
+                                                addApproachToAirportDatabase(targetAirportCode, it, selectedRwy)
+                                            }
+                                        }
                                     },
                                     placeholder = "Type or select APP (e.g. ILS Cat III)",
                                     keyboardOptions = KeyboardOptions(
@@ -11259,6 +13208,10 @@ fun AddFlightLogPage(
                                             baseApproach = aptApp
                                             showApproachDropdown = false
                                             onEdited()
+                                            val targetAirportCode = if (toCode.isNotBlank()) toCode else fromCode
+                                            if (targetAirportCode.isNotBlank() && aptApp.isNotBlank() && !aptApp.equals("None", ignoreCase = true)) {
+                                                addApproachToAirportDatabase(targetAirportCode, aptApp, selectedRwy)
+                                            }
                                         }
                                     )
                                 }
@@ -11329,6 +13282,10 @@ fun AddFlightLogPage(
                                         baseApproach = opt
                                         showApproachDropdown = false
                                         onEdited()
+                                        val targetAirportCode = if (toCode.isNotBlank()) toCode else fromCode
+                                        if (targetAirportCode.isNotBlank() && opt.isNotBlank() && !opt.equals("None", ignoreCase = true)) {
+                                            addApproachToAirportDatabase(targetAirportCode, opt, selectedRwy)
+                                        }
                                     }
                                 )
                             }
@@ -11511,7 +13468,7 @@ fun AddFlightLogPage(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Previous Experience: ${matchingPrevExp.totalHours} hrs",
+                            text = "Previous Experience: ${formatMinutesToHoursClean(Math.round(matchingPrevExp.totalHours * 60).toInt())}",
                             color = Color(0xFFFFB300),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
@@ -11642,44 +13599,45 @@ fun AddFlightLogPage(
                 }
             }
         }
+        } // Close else for aircraft flight log form
 
         } // Close the inner scrolling Column
 
-        if (!isImeVisible) {
-            if (isEditing) {
-                EditFlightNavigationMenu(
-                    onNextClick = onNextClick,
-                    onPrevClick = onPrevClick,
-                    onCancelClick = onCancelClick,
-                    onSaveClick = onSaveClick,
-                    isNextEnabled = currentIndex > 0,
-                    isPrevEnabled = currentIndex < navigationLogs.size - 1,
-                    testTagPrefix = "bottom"
-                )
-            } else {
-                // Bottom CTAs
-                Row(
+        // Bottom Navigation / Save Flight Log Button - ALWAYS displayed
+        if (isEditing) {
+            EditFlightNavigationMenu(
+                onNextClick = onNextClick,
+                onPrevClick = onPrevClick,
+                onCancelClick = onCancelClick,
+                onSaveClick = onSaveClick,
+                isNextEnabled = currentIndex > 0,
+                isPrevEnabled = currentIndex < navigationLogs.size - 1,
+                testTagPrefix = "bottom"
+            )
+        } else {
+            // Bottom CTAs
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        performSave {
+                            onSaveSuccess()
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(16.dp)
+                        .height(48.dp)
+                        .testTag("add_bottom_save_flight_log_btn"),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFFB300), // Amber Gold
+                        contentColor = Color(0xFF1E293B)
+                    )
                 ) {
-                    Button(
-                        onClick = {
-                            performSave {
-                                onSaveSuccess()
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFFFB300), // Amber Gold
-                            contentColor = Color(0xFF1E293B)
-                        )
-                    ) {
-                        Text("Save Flight Log", fontWeight = FontWeight.ExtraBold)
-                    }
+                    Text(if (isSim) "Save Sim Session" else "Save Flight Log", fontWeight = FontWeight.ExtraBold)
                 }
             }
         }
@@ -12118,6 +14076,112 @@ fun CounterRow(
     }
 }
 
+fun getMatchedFlightLogDatabaseData(
+    log: FlightLog,
+    filterQuery: String,
+    dbAirports: List<com.example.data.Airport> = emptyList()
+): String {
+    val q = filterQuery.trim()
+    if (q.isEmpty()) return ""
+
+    val queryTerms = if (q.contains(" • ")) {
+        q.split(" • ").map { it.trim() }.filter { it.isNotEmpty() }
+    } else {
+        listOf(q)
+    }
+
+    val matchedValues = mutableListOf<String>()
+
+    val (crewPart, traineePart) = parseCrewAndTrainee(log.crew)
+    val crewMembers = crewPart.split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && it != "-" }
+        .let { if (traineePart.isNotBlank()) it + traineePart else it }
+
+    for (term in queryTerms) {
+        val t = term.trim()
+        if (t.isEmpty()) continue
+
+        // 1. Crew check: If it is a crew name, show ONLY the full crew name of the searched item and leave other crew names
+        val matchingCrew = crewMembers.filter { it.contains(t, ignoreCase = true) }
+        if (matchingCrew.isNotEmpty()) {
+            matchedValues.addAll(matchingCrew)
+        }
+
+        // 2. Remarks check: Does log.remarks contain term?
+        if (log.remarks.contains(t, ignoreCase = true) && log.remarks.isNotBlank()) {
+            matchedValues.add(log.remarks.trim())
+        }
+
+        // 3. Aircraft type check: Does log.aircraftType contain term?
+        if (log.aircraftType.contains(t, ignoreCase = true) && log.aircraftType.isNotBlank() && !matchedValues.contains(log.aircraftType.trim())) {
+            matchedValues.add(log.aircraftType.trim())
+        }
+
+        // 4. Tail number check: Does log.tailNumber contain term?
+        if (log.tailNumber.contains(t, ignoreCase = true) && log.tailNumber.isNotBlank() && !matchedValues.contains(log.tailNumber.trim())) {
+            matchedValues.add(log.tailNumber.trim())
+        }
+
+        // 5. Flight number check: Does log.flightNum contain term?
+        if (log.flightNum.contains(t, ignoreCase = true) && log.flightNum.isNotBlank() && !matchedValues.contains(log.flightNum.trim())) {
+            matchedValues.add(log.flightNum.trim())
+        }
+
+        // 6. Pilot role check: Does log.pilotRole contain term?
+        if (log.pilotRole.contains(t, ignoreCase = true) && log.pilotRole.isNotBlank() && !matchedValues.contains(log.pilotRole.trim())) {
+            matchedValues.add(log.pilotRole.trim())
+        }
+
+        // 7. Flight rules check: Does log.flightRules contain term?
+        if (log.flightRules.contains(t, ignoreCase = true) && log.flightRules.isNotBlank() && !matchedValues.contains(log.flightRules.trim())) {
+            matchedValues.add(log.flightRules.trim())
+        }
+
+        // 8. Airport / Route check: Does fromCode or toCode contain term?
+        val fromMatch = log.fromCode.contains(t, ignoreCase = true)
+        val toMatch = log.toCode.contains(t, ignoreCase = true)
+        if ((fromMatch || toMatch) && (log.fromCode.isNotBlank() || log.toCode.isNotBlank())) {
+            val fromArpt = dbAirports.find { it.icao.equals(log.fromCode, ignoreCase = true) || it.iata.equals(log.fromCode, ignoreCase = true) }
+            val toArpt = dbAirports.find { it.icao.equals(log.toCode, ignoreCase = true) || it.iata.equals(log.toCode, ignoreCase = true) }
+            val routeStr = if (fromArpt != null && toArpt != null) {
+                "${log.fromCode} (${fromArpt.name.ifBlank { fromArpt.city }}) → ${log.toCode} (${toArpt.name.ifBlank { toArpt.city }})"
+            } else {
+                "${log.fromCode} → ${log.toCode}"
+            }
+            matchedValues.add(routeStr)
+        }
+    }
+
+    // If query didn't match those directly (e.g. multi-word search like "John Smith"):
+    if (matchedValues.isEmpty()) {
+        val words = q.split(" ").map { it.trim() }.filter { it.length >= 2 }
+        if (words.isNotEmpty()) {
+            val wordMatchingCrew = crewMembers.filter { member ->
+                words.any { member.contains(it, ignoreCase = true) }
+            }
+            if (wordMatchingCrew.isNotEmpty()) {
+                matchedValues.addAll(wordMatchingCrew)
+            }
+            if (words.any { log.remarks.contains(it, ignoreCase = true) } && log.remarks.isNotBlank()) {
+                matchedValues.add(log.remarks.trim())
+            }
+            if (words.any { log.aircraftType.contains(it, ignoreCase = true) } && log.aircraftType.isNotBlank()) {
+                matchedValues.add(log.aircraftType.trim())
+            }
+        }
+    }
+
+    // Fallback if none matched:
+    if (matchedValues.isEmpty()) {
+        if (log.remarks.isNotBlank()) {
+            matchedValues.add(log.remarks.trim())
+        }
+    }
+
+    return matchedValues.distinct().joinToString(" • ")
+}
+
 @Composable
 fun FlightLogCard(
     log: FlightLog,
@@ -12126,7 +14190,8 @@ fun FlightLogCard(
     onNext: () -> Unit,
     onReturn: () -> Unit,
     onDuplicate: () -> Unit,
-    dbAirports: List<com.example.data.Airport> = emptyList()
+    dbAirports: List<com.example.data.Airport> = emptyList(),
+    filterCriteriaText: String = ""
 ) {
     val density = LocalDensity.current
     val deleteWidthPx = remember(density) { with(density) { 50f.dp.toPx() } }
@@ -12307,7 +14372,7 @@ fun FlightLogCard(
                     .height(IntrinsicSize.Min)
             ) {
                 // LEFT COLUMN (Date & Icon block)
-                val (dayStr, monthStr, yearStr) = parseDateComponents(log.date)
+                val (dayStr, monthStr, yearStr) = parseDateComponents(log.displayDate ?: log.date)
                 Column(
                     modifier = Modifier
                         .width(60.dp)
@@ -12319,16 +14384,16 @@ fun FlightLogCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(24.dp)
-                            .background(if (showAmberWarning) amberHeaderColor else defaultHeaderColor),
+                            .background(if (log.isSim) Color(0xFFFFB300) else if (showAmberWarning) amberHeaderColor else defaultHeaderColor),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Flight,
-                            contentDescription = null,
+                            imageVector = if (log.isSim) Icons.Default.Computer else Icons.Default.Flight,
+                            contentDescription = if (log.isSim) "Flight Simulator" else null,
                             tint = Color(0xFF0B2545),
                             modifier = Modifier
                                 .size(14.dp)
-                                .rotate(90f)
+                                .then(if (!log.isSim) Modifier.rotate(90f) else Modifier)
                         )
                     }
                     
@@ -12385,7 +14450,13 @@ fun FlightLogCard(
                         .fillMaxHeight()
                 ) {
                     // Header Row
-                    val headerModifier = if (showAmberWarning) {
+                    val headerModifier = if (log.isSim) {
+                        Modifier
+                            .fillMaxWidth()
+                            .height(24.dp)
+                            .background(Color(0xFFFFB300))
+                            .padding(horizontal = 10.dp)
+                    } else if (showAmberWarning) {
                         Modifier
                             .fillMaxWidth()
                             .height(24.dp)
@@ -12412,14 +14483,14 @@ fun FlightLogCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = log.flightNum.ifBlank { "No Flt #" }.uppercase(),
+                            text = if (log.isSim) (if (log.flightNum.isNotBlank()) "${log.flightNum} [SIM]" else "SIM SESSION") else log.flightNum.ifBlank { "No Flt #" }.uppercase(),
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF0B2545)
                         )
                         
                         Text(
-                            text = log.tailNumber.ifBlank { "N/A" }.uppercase(),
+                            text = if (log.isSim) log.aircraftType.ifBlank { "SIM" }.uppercase() else log.tailNumber.ifBlank { "N/A" }.uppercase(),
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF0B2545)
@@ -12427,11 +14498,13 @@ fun FlightLogCard(
                     }
                     
                     // Main Body Row (DEP / Progress / ARR)
-                    val blockMinutes = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                    val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                    val crewCount = if (crewList.isEmpty()) 2 else crewList.size
-                    val proratedBlockMinutes = blockMinutes?.let { calculateProratedMinutes(it, crewCount) }
-                    val blkHrStr = blockMinutes?.let { formatMinutesToHoursClean(it) } ?: "--:--"
+                    val blockMinutes = log.splitMinutes ?: calculateTimeDiffInMinutes(log.outTime, log.inTime)
+                    val flightMinutes = calculateTimeDiffInMinutes(log.offTime, log.onTime)
+                    val effectiveMinutes = blockMinutes ?: flightMinutes ?: parseBlockMinutesFromLog(log.blockHours)
+                    val crewCount = getCrewCount(log.crew)
+                    val proratedBlockMinutes = effectiveMinutes?.let { calculateProratedMinutes(it, crewCount) }
+                    val timeBadgeLabel = if (log.isSim) "SIM" else if (blockMinutes != null) "BLK" else "FLT"
+                    val blkHrStr = effectiveMinutes?.let { formatMinutesToHoursClean(it) } ?: "--:--"
                     val proRatedHrStr = proratedBlockMinutes?.let { formatMinutesToHoursClean(it) } ?: "--:--"
 
                     Row(
@@ -12444,14 +14517,30 @@ fun FlightLogCard(
                         val (depIcao, depIata) = getAirportDisplay(log.fromCode, dbAirports)
                         val (arrIcao, arrIata) = getAirportDisplay(log.toCode, dbAirports)
                         
+                        val hasOut = log.outTime.isNotBlank()
+                        val hasOff = log.offTime.isNotBlank()
+                        val depMainTime = if (hasOut) formatTimeToDisplay(log.outTime) else if (hasOff) formatTimeToDisplay(log.offTime) else "--:--"
+
+                        val hasIn = log.inTime.isNotBlank()
+                        val hasOn = log.onTime.isNotBlank()
+                        val arrMainTime = if (hasIn) formatTimeToDisplay(log.inTime) else if (hasOn) formatTimeToDisplay(log.onTime) else "--:--"
+
                         // DEP Info
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                text = formatTimeToDisplay(log.outTime),
+                                text = depMainTime,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Normal,
                                 color = Color.White.copy(alpha = 0.6f)
                             )
+                            if (hasOut && hasOff && log.outTime != log.offTime) {
+                                Text(
+                                    text = "OFF ${formatTimeToDisplay(log.offTime)}",
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFFFFB300).copy(alpha = 0.85f)
+                                )
+                            }
                             Text(
                                 text = depIata.uppercase(),
                                 fontSize = 16.sp,
@@ -12480,7 +14569,7 @@ fun FlightLogCard(
                                 horizontalArrangement = Arrangement.spacedBy(3.dp)
                             ) {
                                 Text(
-                                    text = "BLK $blkHrStr",
+                                    text = "$timeBadgeLabel $blkHrStr",
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
@@ -12496,6 +14585,24 @@ fun FlightLogCard(
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color(0xFF26A69A)
+                                )
+                            }
+                            
+                            if (log.splitPart == 1) {
+                                Text(
+                                    text = "PART 1: UP TO 00:00 (SPLIT \u2192 NEXT MO)",
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFFFB300),
+                                    letterSpacing = 0.2.sp
+                                )
+                            } else if (log.splitPart == 2) {
+                                Text(
+                                    text = "PART 2: AFTER 00:00 (SPLIT \u2190 PREV MO)",
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF38BDF8),
+                                    letterSpacing = 0.2.sp
                                 )
                             }
                             
@@ -12544,23 +14651,33 @@ fun FlightLogCard(
                             
                             Spacer(modifier = Modifier.height(1.dp))
                             
+                            val depTimelineLabel = if (hasOut && hasOff && log.outTime != log.offTime) "Out" else if (hasOut) "Dep" else if (hasOff) "Off" else "Dep"
+                            val arrTimelineLabel = if (hasIn && hasOn && log.inTime != log.onTime) "In" else if (hasIn) "Arr" else if (hasOn) "Ldg" else "Arr"
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Dep", fontSize = 8.sp, color = Color(0xFF26A69A).copy(alpha = 0.8f), fontWeight = FontWeight.Normal)
-                                Text("Arr", fontSize = 8.sp, color = Color(0xFF26A69A).copy(alpha = 0.8f), fontWeight = FontWeight.Normal)
+                                Text(depTimelineLabel, fontSize = 8.sp, color = Color(0xFF26A69A).copy(alpha = 0.8f), fontWeight = FontWeight.Normal)
+                                Text(arrTimelineLabel, fontSize = 8.sp, color = Color(0xFF26A69A).copy(alpha = 0.8f), fontWeight = FontWeight.Normal)
                             }
                         }
                         
                         // ARR Info
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                text = formatTimeToDisplay(log.inTime),
+                                text = arrMainTime,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Normal,
                                 color = Color.White.copy(alpha = 0.6f)
                             )
+                            if (hasIn && hasOn && log.inTime != log.onTime) {
+                                Text(
+                                    text = "ON ${formatTimeToDisplay(log.onTime)}",
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFFFFB300).copy(alpha = 0.85f)
+                                )
+                            }
                             Text(
                                 text = arrIata.uppercase(),
                                 fontSize = 16.sp,
@@ -12597,19 +14714,200 @@ fun FlightLogCard(
                                 fontWeight = FontWeight.Normal,
                                 color = Color.White.copy(alpha = 0.6f)
                             )
-                            if (crewCount > 2) {
+                            val (crewPart, traineePart) = remember(log.crew) { parseCrewAndTrainee(log.crew) }
+                            var showCrewDropdown by remember { mutableStateOf(false) }
+                            val validCrewMembers = remember(crewPart) {
+                                val list = crewPart.split(",").map { it.trim() }.filter { it.isNotEmpty() && it != "-" }
+                                if (list.isEmpty()) listOf("Self") else list
+                            }
+                            val displayCrewCount = maxOf(crewCount, validCrewMembers.size).coerceAtLeast(1)
+
+                            Box {
                                 Surface(
-                                    shape = RoundedCornerShape(3.dp),
-                                    color = Color(0xFF818CF8).copy(alpha = 0.15f),
-                                    border = BorderStroke(0.5.dp, Color(0xFF818CF8).copy(alpha = 0.35f))
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFF818CF8).copy(alpha = 0.18f),
+                                    border = BorderStroke(0.5.dp, Color(0xFF818CF8).copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable { showCrewDropdown = true }
+                                        .testTag("flight_log_crew_btn_${log.id}")
+                                 ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.People,
+                                            contentDescription = "Crew List",
+                                            tint = Color(0xFF818CF8),
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                        Text(
+                                            text = if (traineePart.isNotBlank()) "${displayCrewCount}P Crew • Trainee" else "${displayCrewCount}P Crew",
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF818CF8)
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowDropDown,
+                                            contentDescription = "Show Crew Dropdown",
+                                            tint = Color(0xFF818CF8),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                }
+
+                                DropdownMenu(
+                                    expanded = showCrewDropdown,
+                                    onDismissRequest = { showCrewDropdown = false },
+                                    modifier = Modifier
+                                        .background(Color(0xFF1E2530))
+                                        .border(1.dp, Color(0xFF818CF8).copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                                 ) {
-                                    Text(
-                                        text = "${crewCount}P Crew",
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF818CF8)
-                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Groups,
+                                            contentDescription = null,
+                                            tint = Color(0xFF818CF8),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "CREW LIST (${validCrewMembers.size})",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF818CF8)
+                                        )
+                                    }
+                                    Divider(color = Color.White.copy(alpha = 0.1f))
+                                    validCrewMembers.forEachIndexed { idx, member ->
+                                        val roleTitle = when (idx) {
+                                            0 -> "Pilot in Command (Self)"
+                                            1 -> "Co-Pilot / First Officer"
+                                            2 -> "Relief Pilot 1"
+                                            3 -> "Relief Pilot 2"
+                                            else -> "Augmented Crew #${idx + 1}"
+                                        }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column(modifier = Modifier.padding(vertical = 2.dp)) {
+                                                    Text(
+                                                        text = member,
+                                                        color = Color.White,
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                    Text(
+                                                        text = roleTitle,
+                                                        color = Color.White.copy(alpha = 0.5f),
+                                                        fontSize = 10.sp
+                                                    )
+                                                }
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = if (idx == 0) Icons.Default.Person else Icons.Default.PersonOutline,
+                                                    contentDescription = null,
+                                                    tint = if (idx == 0) Color(0xFFFFB300) else Color(0xFF818CF8),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            },
+                                            onClick = { showCrewDropdown = false }
+                                        )
+                                    }
+                                    if (traineePart.isNotBlank()) {
+                                        Divider(color = Color.White.copy(alpha = 0.1f))
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.School,
+                                                contentDescription = null,
+                                                tint = Color(0xFFF59E0B),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "TRAINEE",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Color(0xFFF59E0B)
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column(modifier = Modifier.padding(vertical = 2.dp)) {
+                                                    Text(
+                                                        text = traineePart,
+                                                        color = Color.White,
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                    Text(
+                                                        text = "Trainee",
+                                                        color = Color.White.copy(alpha = 0.5f),
+                                                        fontSize = 10.sp
+                                                    )
+                                                }
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.School,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFFF59E0B),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            },
+                                            onClick = { showCrewDropdown = false }
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Show the full data stored in the database right next to crew numbers with a different color
+                            val matchedDatabaseData = remember(log, filterCriteriaText, dbAirports) {
+                                if (filterCriteriaText.isNotBlank()) {
+                                    getMatchedFlightLogDatabaseData(log, filterCriteriaText, dbAirports)
+                                } else {
+                                    ""
+                                }
+                            }
+
+                            if (matchedDatabaseData.isNotBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFFFF9800).copy(alpha = 0.22f),
+                                    border = BorderStroke(0.8.dp, Color(0xFFFF9800).copy(alpha = 0.7f)),
+                                    modifier = Modifier.testTag("flight_log_filter_criteria_${log.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.FilterList,
+                                            contentDescription = "Matched Database Record",
+                                            tint = Color(0xFFFF9800),
+                                            modifier = Modifier.size(10.dp)
+                                        )
+                                        Text(
+                                            text = matchedDatabaseData,
+                                            fontSize = 8.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFFFB84D),
+                                            softWrap = true
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -12738,9 +15036,9 @@ fun parseTimeToMinutes(timeStr: String): Int? {
     if (clean.isEmpty()) return null
     if (clean.contains(":")) {
         val parts = clean.split(":")
-        if (parts.size == 2) {
+        if (parts.size >= 2) {
             val h = parts[0].trim().toIntOrNull() ?: return null
-            val m = parts[1].trim().toIntOrNull() ?: return null
+            val m = parts[1].trim().take(2).toIntOrNull() ?: return null
             if (h in 0..23 && m in 0..59) {
                 return h * 60 + m
             }
@@ -12803,35 +15101,73 @@ fun capNightTimeToBlockTime(nightTimeStr: String, blockMinutes: Int?): String {
 }
 
 fun ensureHHMMFormat(timeStr: String): String {
-    val clean = timeStr.filter { it.isDigit() }
+    val trimmed = timeStr.trim()
+    if (trimmed.isEmpty()) return "00:00"
+    if (trimmed.contains(":")) {
+        val parts = trimmed.split(":")
+        val h = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: 0
+        val m = parts.getOrNull(1)?.trim()?.take(2)?.toIntOrNull() ?: 0
+        return String.format(Locale.US, "%02d:%02d", h.coerceIn(0, 23), m.coerceIn(0, 59))
+    }
+    val clean = trimmed.filter { it.isDigit() }
     if (clean.isEmpty()) return "00:00"
     return when (clean.length) {
         1 -> "0${clean}:00"
         2 -> "${clean}:00"
-        3 -> "${clean.substring(0, 2)}:0${clean.substring(2)}"
+        3 -> "0${clean.substring(0, 1)}:${clean.substring(1)}"
         else -> "${clean.substring(0, 2)}:${clean.substring(2, 4)}"
     }
 }
 
+fun parseBlockMinutesFromLog(raw: String): Int? {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return null
+    if (trimmed.contains(":")) {
+        val parts = trimmed.split(":")
+        val h = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return null
+        val m = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
+        return h * 60 + m
+    }
+    val asDouble = trimmed.toDoubleOrNull()
+    if (asDouble != null) {
+        return Math.round(asDouble * 60.0).toInt()
+    }
+    return null
+}
+
 fun formatMinutesToHours(minutes: Int): String {
-    val h = minutes / 60
-    val m = minutes % 60
-    val decimal = minutes / 60.0
-    return String.format(java.util.Locale.US, "%02d:%02d (%.1f h)", h, m, decimal)
+    val absMin = kotlin.math.abs(minutes)
+    val h = absMin / 60
+    val m = absMin % 60
+    val sign = if (minutes < 0) "-" else ""
+    return String.format(java.util.Locale.US, "%s%02d:%02d", sign, h, m)
 }
 
 fun formatMinutesToHoursClean(minutes: Int): String {
-    val h = minutes / 60
-    val m = minutes % 60
-    return String.format(java.util.Locale.US, "%02d:%02d", h, m)
+    val absMin = kotlin.math.abs(minutes)
+    val h = absMin / 60
+    val m = absMin % 60
+    val sign = if (minutes < 0) "-" else ""
+    return String.format(java.util.Locale.US, "%s%02d:%02d", sign, h, m)
 }
 
 fun isValidTime(timeStr: String): Boolean {
-    val clean = timeStr.filter { it.isDigit() }
-    if (clean.length != 4) return false
-    val hour = clean.substring(0, 2).toIntOrNull() ?: return false
-    val minute = clean.substring(2, 4).toIntOrNull() ?: return false
-    return hour in 0..23 && minute in 0..59
+    val trimmed = timeStr.trim()
+    if (trimmed.contains(":")) {
+        val parts = trimmed.split(":")
+        if (parts.size >= 2) {
+            val h = parts[0].trim().toIntOrNull() ?: return false
+            val m = parts[1].trim().take(2).toIntOrNull() ?: return false
+            return h in 0..23 && m in 0..59
+        }
+    }
+    val clean = trimmed.filter { it.isDigit() }
+    if (clean.length == 4) {
+        val hour = clean.substring(0, 2).toIntOrNull() ?: return false
+        val minute = clean.substring(2, 4).toIntOrNull() ?: return false
+        return hour in 0..23 && minute in 0..59
+    }
+    return false
 }
 
 fun autoFormatTime(input: String, oldVal: String = ""): String {
@@ -12913,20 +15249,23 @@ fun calculateProratedMinutes(minutes: Int, crewCount: Int): Int {
 
 fun isFlightLogWarning(log: FlightLog): Boolean {
     val blockMinutes = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-        ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+        ?: calculateTimeDiffInMinutes(log.offTime, log.onTime)
+        ?: parseBlockMinutesFromLog(log.blockHours)
     val isBlockTimeZeroOrBlank = (blockMinutes == null || blockMinutes <= 0)
-    val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-    val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+    val crewCount = getCrewCount(log.crew)
     val proratedMinutes = blockMinutes?.let { calculateProratedMinutes(it, crewCount) }
     val isProratedExceeds10h = (proratedMinutes != null && proratedMinutes > 600)
+
+    val hasTimes = (log.outTime.isNotBlank() && log.inTime.isNotBlank()) ||
+        (log.offTime.isNotBlank() && log.onTime.isNotBlank()) ||
+        (log.outTime.isNotBlank() || log.offTime.isNotBlank())
 
     val isDataMissing = log.date.isBlank() ||
         log.flightNum.isBlank() ||
         log.tailNumber.isBlank() ||
         log.fromCode.isBlank() ||
         log.toCode.isBlank() ||
-        log.outTime.isBlank() ||
-        log.inTime.isBlank() ||
+        !hasTimes ||
         log.aircraftType.isBlank() ||
         isBlockTimeZeroOrBlank
 
@@ -12939,8 +15278,8 @@ fun calculateActualMinutesInPeriod(
     evalDate: java.util.Date? = null
 ): Int {
     val logDate = parseLogDate(log.date) ?: return 0
-    val startMin = parseTimeToMinutes(log.outTime)
-    val endMin = parseTimeToMinutes(log.inTime)
+    val startMin = parseTimeToMinutes(if (log.outTime.isNotBlank()) log.outTime else log.offTime)
+    val endMin = parseTimeToMinutes(if (log.inTime.isNotBlank()) log.inTime else log.onTime)
 
     // Setup boundary date and evaluation date at midnight (00:00:00)
     val calB = java.util.Calendar.getInstance().apply {
@@ -12981,7 +15320,7 @@ fun calculateActualMinutesInPeriod(
 
     // Helper blockMin
     val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-        ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+        ?: parseBlockMinutesFromLog(log.blockHours)
         ?: 0
 
     if (startMin == null || endMin == null) {
@@ -13064,11 +15403,10 @@ fun calculateProratedMinutesInPeriod(
 
     // Helper blockMin and crew count
     val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-        ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+        ?: parseBlockMinutesFromLog(log.blockHours)
         ?: 0
 
-    val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-    val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+    val crewCount = getCrewCount(log.crew)
 
     if (startMin == null || endMin == null) {
         // If we don't have valid times, treat the flight as happening entirely on departure date
@@ -13116,6 +15454,15 @@ fun parseDateComponents(dateStr: String): Triple<String, String, String> {
     val trimmed = dateStr.trim()
     if (trimmed.isEmpty()) return Triple("15", "Apr", "2026")
     
+    val parsed = parseLogDate(trimmed)
+    if (parsed != null) {
+        val cal = java.util.Calendar.getInstance().apply { time = parsed }
+        val day = String.format(java.util.Locale.US, "%02d", cal.get(java.util.Calendar.DAY_OF_MONTH))
+        val month = java.text.SimpleDateFormat("MMM", java.util.Locale.US).format(parsed)
+        val year = cal.get(java.util.Calendar.YEAR).toString()
+        return Triple(day, month, year)
+    }
+
     val parts = trimmed.split(" ")
     if (parts.size >= 3) {
         val day = parts[0]
@@ -13779,10 +16126,9 @@ fun TotalsTabContent(
                     if (logYr == selectedYear) {
                         val logMonth = sdfMonth.format(date)
                         val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                            ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                            ?: parseBlockMinutesFromLog(log.blockHours)
                             ?: 0
-                        val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                        val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                        val crewCount = getCrewCount(log.crew)
                         val proratedMin = calculateProratedMinutes(blockMin, crewCount)
 
                         val hours = blockMin / 60.0
@@ -13799,7 +16145,7 @@ fun TotalsTabContent(
     }
 
     val totalFlights = remember(allLogs) {
-        allLogs.size
+        allLogs.count { !(it.isSim || it.aircraftType.contains("SIM", ignoreCase = true) || it.remarks.contains("SIM", ignoreCase = true) || it.remarks.contains("FFS", ignoreCase = true)) }
     }
 
     // Calculated total times in minutes
@@ -13809,46 +16155,59 @@ fun TotalsTabContent(
         var logPicMin = 0
         var logSicMin = 0
         var logFiMin = 0
+        var logSimMin = 0
 
         allLogs.forEach { log ->
             val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                ?: parseBlockMinutesFromLog(log.blockHours)
                 ?: 0
-            val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+            val crewCount = getCrewCount(log.crew)
             val proratedMin = calculateProratedMinutes(blockMin, crewCount)
-            
-            logActualMin += blockMin
-            logProratedMin += proratedMin
-            
-            val role = log.pilotRole.trim()
-            if (isPicRole(role, includeFI = true)) {
-                logPicMin += proratedMin
+            val isSimLog = log.isSim || log.aircraftType.contains("SIM", ignoreCase = true) || log.remarks.contains("SIM", ignoreCase = true) || log.remarks.contains("FFS", ignoreCase = true)
+
+            if (isSimLog) {
+                logSimMin += proratedMin
             } else {
-                logSicMin += proratedMin
-            }
-            if (isFlightInstructorRole(role)) {
-                logFiMin += proratedMin
+                logActualMin += blockMin
+                logProratedMin += proratedMin
+
+                val role = log.pilotRole.trim()
+                if (isPicRole(role, includeFI = true)) {
+                    logPicMin += proratedMin
+                } else {
+                    logSicMin += proratedMin
+                }
+                if (isFlightInstructorRole(role)) {
+                    logFiMin += proratedMin
+                }
             }
         }
-        listOf(logActualMin, logProratedMin, logPicMin, logSicMin, logFiMin)
+        listOf(logActualMin, logProratedMin, logPicMin, logSicMin, logFiMin, logSimMin)
     }
 
-    val prevExpHours = remember(previousExperiences) {
-        previousExperiences.sumOf { it.totalHours }
+    val prevExpActualHours = remember(previousExperiences) {
+        previousExperiences.filter { !it.isSim }.sumOf { it.totalHours }
     }
 
-    val totalActualBlockHours = remember(totals, prevExpHours) {
-        (totals[0] / 60.0) + prevExpHours
+    val prevExpSimHours = remember(previousExperiences) {
+        previousExperiences.filter { it.isSim }.sumOf { it.totalHours }
     }
 
-    val totalProratedHours = remember(totals, prevExpHours) {
-        (totals[1] / 60.0) + prevExpHours
+    val totalActualBlockHours = remember(totals, prevExpActualHours) {
+        (totals[0] / 60.0) + prevExpActualHours
+    }
+
+    val totalProratedHours = remember(totals, prevExpActualHours) {
+        (totals[1] / 60.0) + prevExpActualHours
+    }
+
+    val simHours = remember(totals, prevExpSimHours) {
+        (totals[5] / 60.0) + prevExpSimHours
     }
 
     val picHours = remember(totals, previousExperiences) {
         var prevPic = 0.0
-        previousExperiences.forEach { exp ->
+        previousExperiences.filter { !it.isSim }.forEach { exp ->
             val r = exp.pilotRole.trim()
             if (isPicRole(r, includeFI = true)) {
                 prevPic += exp.totalHours
@@ -13859,7 +16218,7 @@ fun TotalsTabContent(
 
     val sicHours = remember(totals, previousExperiences) {
         var prevSic = 0.0
-        previousExperiences.forEach { exp ->
+        previousExperiences.filter { !it.isSim }.forEach { exp ->
             val r = exp.pilotRole.trim()
             if (!isPicRole(r, includeFI = true)) {
                 prevSic += exp.totalHours
@@ -13870,7 +16229,7 @@ fun TotalsTabContent(
 
     val fiHours = remember(totals, previousExperiences) {
         var prevFi = 0.0
-        previousExperiences.forEach { exp ->
+        previousExperiences.filter { !it.isSim }.forEach { exp ->
             val r = exp.pilotRole.trim()
             if (isFlightInstructorRole(r)) {
                 prevFi += exp.totalHours
@@ -13905,10 +16264,9 @@ fun TotalsTabContent(
                 if (date != null) {
                     val key = if (isMonthView) sdfMonthOut.format(date) else sdfYearOut.format(date)
                     val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                        ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                        ?: parseBlockMinutesFromLog(log.blockHours)
                         ?: 0
-                    val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                    val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                    val crewCount = getCrewCount(log.crew)
                     val proratedMin = calculateProratedMinutes(blockMin, crewCount)
 
                     val hours = blockMin / 60.0
@@ -13971,7 +16329,7 @@ fun TotalsTabContent(
                 ) {
                     Icon(imageVector = Icons.Default.Schedule, contentDescription = null, tint = Color.White.copy(alpha = 0.4f), modifier = Modifier.size(18.dp))
                     Text("Total hours", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.5f))
-                    Text("${totalActualBlockHours.toInt()}h / ${totalProratedHours.toInt()}h", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = Color.White)
+                    Text("${formatMinutesToHoursClean(Math.round(totalActualBlockHours * 60).toInt())} / ${formatMinutesToHoursClean(Math.round(totalProratedHours * 60).toInt())}", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = Color.White)
                     Text("Actual / Prorated", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.4f))
                 }
             }
@@ -14131,18 +16489,18 @@ fun TotalsTabContent(
                                         verticalAlignment = Alignment.Bottom
                                     ) {
                                         Text(
-                                            text = "${totalBlock.toInt()}",
+                                            text = formatMinutesToHoursClean(Math.round(totalBlock * 60).toInt()),
                                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
                                             color = Color.White.copy(alpha = 0.8f)
                                         )
-                                        if (totalBlock.toInt() != proratedBlock.toInt()) {
+                                        if (Math.round(totalBlock * 60).toInt() != Math.round(proratedBlock * 60).toInt()) {
                                             Text(
                                                 text = "|",
                                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                                                 color = Color.White.copy(alpha = 0.3f)
                                             )
                                             Text(
-                                                text = "${proratedBlock.toInt()}",
+                                                text = formatMinutesToHoursClean(Math.round(proratedBlock * 60).toInt()),
                                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
                                                 color = if (proratedBlock <= monthlyLimit) Color(0xFF10B981) else Color(0xFFEF4444)
                                             )
@@ -14217,18 +16575,18 @@ fun TotalsTabContent(
                                         verticalAlignment = Alignment.Bottom
                                     ) {
                                         Text(
-                                            text = "${totalBlock.toInt()}",
+                                            text = formatMinutesToHoursClean(Math.round(totalBlock * 60).toInt()),
                                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
                                             color = Color.White.copy(alpha = 0.8f)
                                         )
-                                        if (totalBlock.toInt() != proratedBlock.toInt()) {
+                                        if (Math.round(totalBlock * 60).toInt() != Math.round(proratedBlock * 60).toInt()) {
                                             Text(
                                                 text = "|",
                                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                                                 color = Color.White.copy(alpha = 0.3f)
                                             )
                                             Text(
-                                                text = "${proratedBlock.toInt()}",
+                                                text = formatMinutesToHoursClean(Math.round(proratedBlock * 60).toInt()),
                                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
                                                 color = if (proratedBlock <= yearlyLimit) Color(0xFF10B981) else Color(0xFFEF4444)
                                             )
@@ -14305,7 +16663,7 @@ fun TotalsTabContent(
                         modifier = Modifier.weight(1f)
                     )
                     Text(
-                        "${picHours.toInt()}h",
+                        formatMinutesToHoursClean(Math.round(picHours * 60).toInt()),
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = Color.White
                     )
@@ -14332,7 +16690,7 @@ fun TotalsTabContent(
                         modifier = Modifier.weight(1f)
                     )
                     Text(
-                        "${sicHours.toInt()}h",
+                        formatMinutesToHoursClean(Math.round(sicHours * 60).toInt()),
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = Color.White
                     )
@@ -14360,7 +16718,35 @@ fun TotalsTabContent(
                             modifier = Modifier.weight(1f)
                         )
                         Text(
-                            "${fiHours.toInt()}h",
+                            formatMinutesToHoursClean(Math.round(fiHours * 60).toInt()),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                    }
+                }
+
+                if (simHours > 0.0) {
+                    Divider(color = Color.White.copy(alpha = 0.05f))
+
+                    // Flight Simulator row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 14.dp, height = 30.dp)
+                                .background(Color(0xFF818CF8), RoundedCornerShape(3.dp))
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text(
+                            "Flight Simulator",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            formatMinutesToHoursClean(Math.round(simHours * 60).toInt()),
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = Color.White
                         )
@@ -14388,7 +16774,7 @@ fun TotalsTabContent(
                     }
                     Spacer(modifier = Modifier.weight(1f))
                     Text(
-                        "${totalProratedHours.toInt()}h",
+                        formatMinutesToHoursClean(Math.round(totalProratedHours * 60).toInt()),
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = Color.White
                     )
@@ -14458,7 +16844,7 @@ fun FleetTabContent(
 
             matchingLogs.forEach { log ->
                 val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                    ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                    ?: parseBlockMinutesFromLog(log.blockHours)
                     ?: 0
                 val hours = blockMin / 60.0
                 val isPic = isPicRole(log.pilotRole, includeFI = true)
@@ -14597,7 +16983,7 @@ fun FleetTabContent(
                                         color = Color.White.copy(alpha = 0.5f)
                                     )
                                     Text(
-                                        text = "${stats.totalHours.toInt()}h",
+                                        text = formatMinutesToHoursClean(Math.round(stats.totalHours * 60).toInt()),
                                         style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
                                         color = Color.White
                                     )
@@ -14621,7 +17007,7 @@ fun FleetTabContent(
                                                 color = Color(0xFF34D399)
                                             )
                                             Text(
-                                                "${stats.picHours.toInt()}h",
+                                                formatMinutesToHoursClean(Math.round(stats.picHours * 60).toInt()),
                                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                                 color = Color.White
                                             )
@@ -14644,7 +17030,7 @@ fun FleetTabContent(
                                                 color = Color(0xFF60A5FA)
                                             )
                                             Text(
-                                                "${stats.sicHours.toInt()}h",
+                                                formatMinutesToHoursClean(Math.round(stats.sicHours * 60).toInt()),
                                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                                 color = Color.White
                                             )
@@ -14668,7 +17054,7 @@ fun FleetTabContent(
                                                     color = Color(0xFFF59E0B)
                                                 )
                                                 Text(
-                                                    "${stats.fiHours.toInt()}h",
+                                                    formatMinutesToHoursClean(Math.round(stats.fiHours * 60).toInt()),
                                                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                                     color = Color.White
                                                 )
@@ -14786,17 +17172,17 @@ fun FleetTabContent(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = "28d: ${stats.hours28.toInt()}h",
+                                    text = "28d: ${formatMinutesToHoursClean(Math.round(stats.hours28 * 60).toInt())}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.White.copy(alpha = 0.6f)
                                 )
                                 Text(
-                                    text = "90d: ${stats.hours90.toInt()}h",
+                                    text = "90d: ${formatMinutesToHoursClean(Math.round(stats.hours90 * 60).toInt())}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.White.copy(alpha = 0.6f)
                                 )
                                 Text(
-                                    text = "365d: ${stats.hours365.toInt()}h",
+                                    text = "365d: ${formatMinutesToHoursClean(Math.round(stats.hours365 * 60).toInt())}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.White.copy(alpha = 0.6f)
                                 )
@@ -15061,7 +17447,7 @@ fun RecencyTabContent(
                         }
 
                         Text(
-                            text = "Accumulated prorated block hours in the last ${limit.days} days compared against the setting threshold of ${limit.hours} hrs.",
+                            text = "Accumulated prorated block hours in the last ${limit.days} days compared against the setting threshold of ${formatMinutesToHoursClean(Math.round(limit.hours * 60).toInt())}.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.45f),
                             lineHeight = 15.sp
@@ -15073,12 +17459,12 @@ fun RecencyTabContent(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Current Prorated: ${String.format(java.util.Locale.US, "%.1f", currentHours)} hrs",
+                                text = "Current Prorated: ${formatMinutesToHoursClean(Math.round(currentHours * 60).toInt())}",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = Color.White.copy(alpha = 0.7f)
                             )
                             Text(
-                                text = "Limit: ${limit.hours} hrs",
+                                text = "Limit: ${formatMinutesToHoursClean(Math.round(limit.hours * 60).toInt())}",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = Color.White.copy(alpha = 0.7f)
                             )
@@ -15909,7 +18295,7 @@ fun getDefaultDocs(): List<WalletDocument> {
     )
 }
 
-fun parseCsvLine(line: String): List<String> {
+fun parseCsvLine(line: String, delimiter: Char = ','): List<String> {
     val result = mutableListOf<String>()
     var inQuotes = false
     val currentField = StringBuilder()
@@ -15924,7 +18310,7 @@ fun parseCsvLine(line: String): List<String> {
             } else {
                 inQuotes = !inQuotes
             }
-        } else if (c == ',' && !inQuotes) {
+        } else if (c == delimiter && !inQuotes) {
             result.add(currentField.toString().trim())
             currentField.setLength(0)
         } else {
@@ -15937,9 +18323,19 @@ fun parseCsvLine(line: String): List<String> {
 }
 
 fun correctDateAnomaly(rawDate: String): String {
-    val trimmed = rawDate.trim()
+    var trimmed = rawDate.trim().replace("\"", "").replace("'", "")
     if (trimmed.isEmpty()) {
         return SimpleDateFormat("dd MMM yy", Locale.US).format(Date())
+    }
+
+    // If string has datetime (e.g. "2023-10-15 14:30:00" or "2023-10-15T14:30:00Z"), strip time
+    if (trimmed.contains("T")) {
+        trimmed = trimmed.substringBefore("T").trim()
+    } else if (trimmed.contains(" ") && trimmed.contains(":")) {
+        val tokens = trimmed.split("\\s+".toRegex())
+        val dateToken = tokens.firstOrNull { it.contains("-") || it.contains("/") || (it.contains(".") && it.length >= 8) }
+            ?: if (tokens.size >= 3 && tokens[1].all { it.isLetter() }) "${tokens[0]} ${tokens[1]} ${tokens[2]}" else tokens.firstOrNull() ?: trimmed
+        trimmed = dateToken.trim()
     }
 
     // Try parsing the current expected format first
@@ -16025,6 +18421,162 @@ fun correctDateAnomaly(rawDate: String): String {
     }
 
     return trimmed
+}
+
+fun extractDateFromDateTime(raw: String): String? {
+    val s = raw.trim().replace("\"", "").replace("'", "")
+    if (s.isEmpty()) return null
+    // If it's a pure time (e.g. "14:30", "1430") or decimal, it contains no date
+    if (s.matches("""^\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:\s*[AaPp][Mm])?$""".toRegex())) return null
+    if (s.matches("""^\d{3,4}$""".toRegex())) return null
+    if (s.matches("""^0\.\d+$""".toRegex())) return null
+
+    // If it has ISO "T" e.g. "2023-10-15T14:30:00Z"
+    if (s.contains("T")) {
+        val datePart = s.substringBefore("T").trim()
+        val corrected = correctDateAnomaly(datePart)
+        if (corrected.isNotBlank()) return corrected
+    }
+
+    // If it has space separator e.g. "2023-10-15 14:30" or "15/10/2023 14:30" or "15.10.2023 14:30" or "15 Oct 2023 14:30"
+    if (s.contains(" ")) {
+        val parts = s.split("\\s+".toRegex())
+        val datePart = parts.firstOrNull { it.contains("-") || it.contains("/") || (it.contains(".") && it.length >= 8) }
+            ?: if (parts.size >= 3 && parts[1].all { it.isLetter() }) "${parts[0]} ${parts[1]} ${parts[2]}" else parts.firstOrNull()
+        if (!datePart.isNullOrBlank()) {
+            val corrected = correctDateAnomaly(datePart)
+            if (corrected.isNotBlank()) return corrected
+        }
+    }
+
+    return null
+}
+
+fun normalizeTimeString(rawTime: String): String {
+    // Strip non-breaking spaces and invisible characters
+    var s = rawTime.replace("\u00A0", " ").replace("\u200B", "").trim()
+    if (s.isEmpty() || s == "-" || s == "--" || s == "--:--" || s == "--:--:--" ||
+        s.equals("null", ignoreCase = true) || s.equals("n/a", ignoreCase = true) ||
+        s.equals("none", ignoreCase = true) || s.equals("nil", ignoreCase = true)) {
+        return ""
+    }
+
+    // Single or 2-digit integer numbers without colon/AM/PM (e.g. "0", "1", "2") are landing/takeoff counts, NOT times of day
+    if (s.length in 1..2 && s.all { it.isDigit() }) {
+        return ""
+    }
+
+    // 1. Excel serial day fraction (e.g. "0.604166666666667" which is 14:30:00)
+    if (s.matches("""^0\.\d+$""".toRegex())) {
+        val frac = s.toDoubleOrNull()
+        if (frac != null && frac >= 0.0 && frac < 1.0) {
+            val totalSeconds = Math.round(frac * 86400).toInt()
+            val hour = (totalSeconds / 3600) % 24
+            val minute = ((totalSeconds % 3600) / 60) % 60
+            return String.format(Locale.US, "%02d:%02d", hour, minute)
+        }
+    }
+
+    // 2. Decimal hours or period-formatted times (e.g. "14.30" vs "14.5" / "14.75")
+    if (s.contains(".") && !s.contains(":")) {
+        val dotParts = s.split(".")
+        if (dotParts.size == 2 && dotParts[0].all { it.isDigit() } && dotParts[1].all { it.isDigit() }) {
+            val h = dotParts[0].toIntOrNull()
+            val m = dotParts[1].toIntOrNull()
+            // If format is like "14.30" (two digits and valid minutes <= 59)
+            if (h != null && m != null && h in 0..23 && dotParts[1].length == 2 && m in 0..59) {
+                return String.format(Locale.US, "%02d:%02d", h, m)
+            }
+            // If decimal hours (e.g. 14.5 -> 14h 30m, 14.75 -> 14h 45m)
+            val asDouble = s.toDoubleOrNull()
+            if (asDouble != null && asDouble in 0.0..24.0) {
+                val totalMins = Math.round(asDouble * 60).toInt()
+                val hour = (totalMins / 60) % 24
+                val minute = totalMins % 60
+                return String.format(Locale.US, "%02d:%02d", hour, minute)
+            }
+        }
+    }
+
+    // 3. Extract time part from full datetimes (e.g. "2023-10-15 14:30:00", "15.10.2023 14:30", "15 Oct 2023 14:30", "2023-10-15T14:30:00Z")
+    val timeWithColonRegex = Regex("""(?i)(?:^|[^\d:])([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.\d+)?(?:\s*([ap]m))?(?:[^\d:]|$)""")
+    val colonMatch = timeWithColonRegex.find(s)
+    if (colonMatch != null) {
+        var h = colonMatch.groupValues[1].toIntOrNull()
+        val m = colonMatch.groupValues[2].toIntOrNull()
+        val amPm = colonMatch.groupValues[4].lowercase()
+        if (h != null && m != null) {
+            if (amPm == "pm" && h in 1..11) h += 12
+            else if (amPm == "am" && h == 12) h = 0
+            if (h in 0..23 && m in 0..59) {
+                return String.format(Locale.US, "%02d:%02d", h, m)
+            }
+        }
+    }
+
+    // 4. Extract 4-digit military time from strings (e.g. "2023-10-15 1430", "1430Z", "1430 UTC")
+    val militaryTimeRegex = Regex("""(?i)(?:^|[\sT])([01]\d|2[0-3])([0-5]\d)(?:\s*(?:utc|z|local|gmt))?(?:${'$'}|\s)""")
+    val milMatch = militaryTimeRegex.find(s)
+    if (milMatch != null) {
+        val h = milMatch.groupValues[1].toIntOrNull()
+        val m = milMatch.groupValues[2].toIntOrNull()
+        if (h != null && m != null && h in 0..23 && m in 0..59) {
+            return String.format(Locale.US, "%02d:%02d", h, m)
+        }
+    }
+
+    // 5. Clean up any remaining timezone / offset suffixes
+    val isPM = s.contains("PM", ignoreCase = true)
+    val isAM = s.contains("AM", ignoreCase = true)
+    s = s.replace("(?i)AM|PM|UTC|GMT|Z|LOCAL|LCL".toRegex(), "").trim()
+    s = s.replace("""(?:\s*\(\+\d+\)|\s*\+\d+).*""".toRegex(), "").trim()
+
+    var hour: Int? = null
+    var minute: Int? = null
+
+    if (s.contains(":")) {
+        val parts = s.split(":")
+        if (parts.size >= 2) {
+            val h = parts[0].filter { it.isDigit() }.toIntOrNull()
+            val m = parts[1].filter { it.isDigit() }.take(2).toIntOrNull()
+            if (h != null && m != null) {
+                hour = h
+                minute = m
+            }
+        }
+    } else {
+        // Pure digits: e.g. "1430", "930", "0000"
+        val digits = s.filter { it.isDigit() }
+        when (digits.length) {
+            4 -> {
+                hour = digits.substring(0, 2).toIntOrNull()
+                minute = digits.substring(2, 4).toIntOrNull()
+            }
+            3 -> {
+                hour = digits.substring(0, 1).toIntOrNull()
+                minute = digits.substring(1, 3).toIntOrNull()
+            }
+        }
+    }
+
+    if (hour != null && minute != null) {
+        if (isPM && hour in 1..11) {
+            hour += 12
+        } else if (isAM && hour == 12) {
+            hour = 0
+        }
+
+        if (hour in 0..23 && minute in 0..59) {
+            return String.format(Locale.US, "%02d:%02d", hour, minute)
+        }
+    }
+
+    return ""
+}
+
+fun normalizeBlockHours(raw: String): String {
+    val mins = parseBlockMinutesFromLog(raw) ?: return raw.trim()
+    return formatMinutesToHoursClean(mins)
 }
 
 fun formatDateToShortSlash(dateStr: String): String {

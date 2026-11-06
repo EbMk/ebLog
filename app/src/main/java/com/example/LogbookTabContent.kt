@@ -1,5 +1,6 @@
 package com.example
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -30,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,6 +41,7 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.math.abs
 
+@Immutable
 data class FlightLogGroup(
     val groupKey: String,
     val groupSortEpoch: Long,
@@ -53,6 +56,7 @@ data class FlightLogGroup(
     val proratedFiMin: Int = 0
 )
 
+@Immutable
 data class LogbookSummaryStats(
     val picMin: Int,
     val picProMin: Int,
@@ -279,14 +283,14 @@ fun PeriodNavigatorBar(
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = String.format(Locale.US, "%d:%02d", currentGroup.picMin / 60, currentGroup.picMin % 60),
+                                text = formatMinutesToHoursClean(currentGroup.picMin),
                                 color = Color(0xFF34D399),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
                         Text(
-                            text = "Pro: " + String.format(Locale.US, "%d:%02d", currentGroup.proratedPicMin / 60, currentGroup.proratedPicMin % 60),
+                            text = "Pro: " + formatMinutesToHoursClean(currentGroup.proratedPicMin),
                             color = Color(0xFF34D399).copy(alpha = 0.75f),
                             fontSize = 9.sp,
                             fontWeight = FontWeight.SemiBold
@@ -306,14 +310,14 @@ fun PeriodNavigatorBar(
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = String.format(Locale.US, "%d:%02d", currentGroup.sicMin / 60, currentGroup.sicMin % 60),
+                                text = formatMinutesToHoursClean(currentGroup.sicMin),
                                 color = Color(0xFF60A5FA),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
                         Text(
-                            text = "Pro: " + String.format(Locale.US, "%d:%02d", currentGroup.proratedSicMin / 60, currentGroup.proratedSicMin % 60),
+                            text = "Pro: " + formatMinutesToHoursClean(currentGroup.proratedSicMin),
                             color = Color(0xFF60A5FA).copy(alpha = 0.75f),
                             fontSize = 9.sp,
                             fontWeight = FontWeight.SemiBold
@@ -334,14 +338,14 @@ fun PeriodNavigatorBar(
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    text = String.format(Locale.US, "%d:%02d", currentGroup.fiMin / 60, currentGroup.fiMin % 60),
+                                    text = formatMinutesToHoursClean(currentGroup.fiMin),
                                     color = Color(0xFFF59E0B),
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
                             Text(
-                                text = "Pro: " + String.format(Locale.US, "%d:%02d", currentGroup.proratedFiMin / 60, currentGroup.proratedFiMin % 60),
+                                text = "Pro: " + formatMinutesToHoursClean(currentGroup.proratedFiMin),
                                 color = Color(0xFFF59E0B).copy(alpha = 0.75f),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -366,14 +370,14 @@ fun PeriodNavigatorBar(
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            text = String.format(Locale.US, "%d:%02d", currentGroup.totalMin / 60, currentGroup.totalMin % 60),
+                            text = formatMinutesToHoursClean(currentGroup.totalMin),
                             color = Color.White,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Text(
-                        text = "Pro: " + String.format(Locale.US, "%d:%02d", currentGroup.proratedTotalMin / 60, currentGroup.proratedTotalMin % 60),
+                        text = "Pro: " + formatMinutesToHoursClean(currentGroup.proratedTotalMin),
                         color = Color(0xFFFFB300),
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold
@@ -409,6 +413,8 @@ fun LogbookTabContent(
     onSelectedPilotRolesChange: (Set<String>) -> Unit,
     selectedBlockTimes: Set<String>,
     onSelectedBlockTimesChange: (Set<String>) -> Unit,
+    selectedCrews: Set<String> = emptySet(),
+    onSelectedCrewsChange: (Set<String>) -> Unit = {},
     sortRecentFirst: Boolean,
     onSortRecentFirstChange: (Boolean) -> Unit,
     viewBy: String = "All Records",
@@ -426,6 +432,88 @@ fun LogbookTabContent(
     var showStartDatePicker by remember { mutableStateOf(false) }
     var showEndDatePicker by remember { mutableStateOf(false) }
 
+    val parsedDateLogs = remember(allLogs) {
+        allLogs.mapNotNull { log ->
+            parseLogDate(log.date)?.let { d -> Pair(d, log) }
+        }.sortedBy { it.first.time }
+    }
+    val earliestRecordDate = remember(parsedDateLogs) {
+        parsedDateLogs.firstOrNull()?.first
+    }
+    val latestRecordDate = remember(parsedDateLogs) {
+        parsedDateLogs.lastOrNull()?.first
+    }
+
+    val isFrontStartSelected = remember(customStartDate, earliestRecordDate) {
+        if (customStartDate == null || earliestRecordDate == null) false
+        else {
+            val c1 = java.util.Calendar.getInstance().apply { time = customStartDate }
+            val c2 = java.util.Calendar.getInstance().apply { time = earliestRecordDate }
+            c1.get(java.util.Calendar.YEAR) == c2.get(java.util.Calendar.YEAR) &&
+            c1.get(java.util.Calendar.DAY_OF_YEAR) == c2.get(java.util.Calendar.DAY_OF_YEAR)
+        }
+    }
+
+    val isToEndSelected = remember(customEndDate, latestRecordDate) {
+        if (customEndDate == null || latestRecordDate == null) false
+        else {
+            val c1 = java.util.Calendar.getInstance().apply { time = customEndDate }
+            val c2 = java.util.Calendar.getInstance().apply { time = latestRecordDate }
+            c1.get(java.util.Calendar.YEAR) == c2.get(java.util.Calendar.YEAR) &&
+            c1.get(java.util.Calendar.DAY_OF_YEAR) == c2.get(java.util.Calendar.DAY_OF_YEAR)
+        }
+    }
+
+    val activeFilterCriteriaText = remember(
+        searchQuery,
+        selectedAircraftTypes,
+        selectedCrews,
+        selectedPilotRoles,
+        selectedPeriods,
+        selectedBlockTimes,
+        incompleteOnly,
+        customStartDate,
+        customEndDate,
+        isFrontStartSelected,
+        isToEndSelected
+    ) {
+        val q = searchQuery.trim()
+        val otherParts = mutableListOf<String>()
+        if (selectedCrews.isNotEmpty()) otherParts.add(selectedCrews.joinToString(", "))
+        if (selectedAircraftTypes.isNotEmpty()) otherParts.add(selectedAircraftTypes.joinToString(", "))
+        if (selectedPilotRoles.isNotEmpty()) otherParts.add(selectedPilotRoles.joinToString(", "))
+        if (selectedBlockTimes.isNotEmpty()) otherParts.add(selectedBlockTimes.joinToString(", "))
+        if (selectedPeriods.isNotEmpty()) {
+            if (selectedPeriods.contains("Custom")) {
+                val nonCustom = selectedPeriods.filter { it != "Custom" }
+                val customParts = mutableListOf<String>()
+                if (isFrontStartSelected && isToEndSelected) {
+                    customParts.add("All: Front Start → To End")
+                } else {
+                    val s = if (isFrontStartSelected) "Front Start" else customStartDate?.let { logbookDateFormatter.format(it) }
+                    val e = if (isToEndSelected) "To End" else customEndDate?.let { logbookDateFormatter.format(it) }
+                    if (s != null && e != null) customParts.add("$s to $e")
+                    else if (s != null) customParts.add("From $s")
+                    else if (e != null) customParts.add("Until $e")
+                    else customParts.add("Custom")
+                }
+                otherParts.addAll(nonCustom)
+                otherParts.addAll(customParts)
+            } else {
+                otherParts.add(selectedPeriods.joinToString(", "))
+            }
+        }
+        if (incompleteOnly) otherParts.add("Incomplete")
+
+        if (q.isNotEmpty()) {
+            q
+        } else if (otherParts.isNotEmpty()) {
+            otherParts.joinToString(" • ")
+        } else {
+            ""
+        }
+    }
+
     // Grouping calculations based on viewBy ("All Records", "Month", "Year")
     val groupedLogs = remember(filteredLogs, viewBy, sortRecentFirst) {
         if (viewBy.equals("Month", ignoreCase = true)) {
@@ -434,19 +522,72 @@ fun LogbookTabContent(
             val epochMap = mutableMapOf<String, Long>()
 
             filteredLogs.forEach { log ->
-                val d = parseLogDate(log.date)
-                val key = if (d != null) monthFormat.format(d) else "Unspecified Date"
-                map.getOrPut(key) { mutableListOf() }.add(log)
-                if (d != null && !epochMap.containsKey(key)) {
-                    val cal = java.util.Calendar.getInstance().apply {
-                        time = d
-                        set(java.util.Calendar.DAY_OF_MONTH, 1)
-                        set(java.util.Calendar.HOUR_OF_DAY, 0)
-                        set(java.util.Calendar.MINUTE, 0)
-                        set(java.util.Calendar.SECOND, 0)
-                        set(java.util.Calendar.MILLISECOND, 0)
+                val split = getMonthSplitInfo(log)
+                if (split != null && split.extendsToNextMonth) {
+                    // 1. Starting month portion (credits time up to 00:00)
+                    val startLog = log.copy(
+                        splitPart = 1,
+                        splitMinutes = split.startingMinutes,
+                        inTime = "00:00",
+                        onTime = "00:00",
+                        landingDay = 0,
+                        landingNight = 0
+                    )
+                    map.getOrPut(split.startingMonthKey) { mutableListOf() }.add(startLog)
+                    if (!epochMap.containsKey(split.startingMonthKey)) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            time = split.startingDate
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                            set(java.util.Calendar.HOUR_OF_DAY, 0)
+                            set(java.util.Calendar.MINUTE, 0)
+                            set(java.util.Calendar.SECOND, 0)
+                            set(java.util.Calendar.MILLISECOND, 0)
+                        }
+                        epochMap[split.startingMonthKey] = cal.timeInMillis
                     }
-                    epochMap[key] = cal.timeInMillis
+
+                    // 2. Next month portion (credits time after 00:00)
+                    val nextDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                    val nextDateStr = nextDateFormat.format(split.nextDate)
+                    val nextLog = log.copy(
+                        splitPart = 2,
+                        splitMinutes = split.nextMinutes,
+                        displayDate = nextDateStr,
+                        date = SimpleDateFormat("dd MMM yyyy", Locale.US).format(split.nextDate),
+                        dateEpoch = split.nextDate.time,
+                        outTime = "00:00",
+                        offTime = "00:00",
+                        outMinutes = 0,
+                        takeoffDay = 0,
+                        takeoffNight = 0
+                    )
+                    map.getOrPut(split.nextMonthKey) { mutableListOf() }.add(nextLog)
+                    if (!epochMap.containsKey(split.nextMonthKey)) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            time = split.nextDate
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                            set(java.util.Calendar.HOUR_OF_DAY, 0)
+                            set(java.util.Calendar.MINUTE, 0)
+                            set(java.util.Calendar.SECOND, 0)
+                            set(java.util.Calendar.MILLISECOND, 0)
+                        }
+                        epochMap[split.nextMonthKey] = cal.timeInMillis
+                    }
+                } else {
+                    val d = parseLogDate(log.date)
+                    val key = if (d != null) monthFormat.format(d) else "Unspecified Date"
+                    map.getOrPut(key) { mutableListOf() }.add(log)
+                    if (d != null && !epochMap.containsKey(key)) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            time = d
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                            set(java.util.Calendar.HOUR_OF_DAY, 0)
+                            set(java.util.Calendar.MINUTE, 0)
+                            set(java.util.Calendar.SECOND, 0)
+                            set(java.util.Calendar.MILLISECOND, 0)
+                        }
+                        epochMap[key] = cal.timeInMillis
+                    }
                 }
             }
 
@@ -460,11 +601,12 @@ fun LogbookTabContent(
                 var tMin = 0
                 var tProMin = 0
                 logsList.forEach { log ->
-                    val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                        ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                    val blockMin = log.splitMinutes
+                        ?: calculateTimeDiffInMinutes(log.outTime, log.inTime)
+                        ?: calculateTimeDiffInMinutes(log.offTime, log.onTime)
+                        ?: parseBlockMinutesFromLog(log.blockHours)
                         ?: 0
-                    val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                    val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                    val crewCount = getCrewCount(log.crew)
                     val proMin = calculateProratedMinutes(blockMin, crewCount)
                     tMin += blockMin
                     tProMin += proMin
@@ -482,10 +624,17 @@ fun LogbookTabContent(
                         fProMin += proMin
                     }
                 }
+                val sortedList = logsList.sortedWith { l1, l2 ->
+                    if (sortRecentFirst) {
+                        compareFlightLogsRecentToOld(l1, l2)
+                    } else {
+                        compareFlightLogsRecentToOld(l2, l1)
+                    }
+                }
                 FlightLogGroup(
                     groupKey = key,
                     groupSortEpoch = epochMap[key] ?: 0L,
-                    logs = logsList,
+                    logs = sortedList,
                     totalMin = tMin,
                     proratedTotalMin = tProMin,
                     picMin = pMin,
@@ -508,20 +657,73 @@ fun LogbookTabContent(
             val epochMap = mutableMapOf<String, Long>()
 
             filteredLogs.forEach { log ->
-                val d = parseLogDate(log.date)
-                val key = if (d != null) yearFormat.format(d) else "Unspecified Year"
-                map.getOrPut(key) { mutableListOf() }.add(log)
-                if (d != null && !epochMap.containsKey(key)) {
-                    val cal = java.util.Calendar.getInstance().apply {
-                        time = d
-                        set(java.util.Calendar.MONTH, 0)
-                        set(java.util.Calendar.DAY_OF_MONTH, 1)
-                        set(java.util.Calendar.HOUR_OF_DAY, 0)
-                        set(java.util.Calendar.MINUTE, 0)
-                        set(java.util.Calendar.SECOND, 0)
-                        set(java.util.Calendar.MILLISECOND, 0)
+                val split = getMonthSplitInfo(log)
+                if (split != null && split.extendsToNextMonth && split.startingYearKey != split.nextYearKey) {
+                    val startLog = log.copy(
+                        splitPart = 1,
+                        splitMinutes = split.startingMinutes,
+                        inTime = "00:00",
+                        onTime = "00:00",
+                        landingDay = 0,
+                        landingNight = 0
+                    )
+                    map.getOrPut(split.startingYearKey) { mutableListOf() }.add(startLog)
+                    if (!epochMap.containsKey(split.startingYearKey)) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            time = split.startingDate
+                            set(java.util.Calendar.MONTH, 0)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                            set(java.util.Calendar.HOUR_OF_DAY, 0)
+                            set(java.util.Calendar.MINUTE, 0)
+                            set(java.util.Calendar.SECOND, 0)
+                            set(java.util.Calendar.MILLISECOND, 0)
+                        }
+                        epochMap[split.startingYearKey] = cal.timeInMillis
                     }
-                    epochMap[key] = cal.timeInMillis
+
+                    val nextDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                    val nextDateStr = nextDateFormat.format(split.nextDate)
+                    val nextLog = log.copy(
+                        splitPart = 2,
+                        splitMinutes = split.nextMinutes,
+                        displayDate = nextDateStr,
+                        date = SimpleDateFormat("dd MMM yyyy", Locale.US).format(split.nextDate),
+                        dateEpoch = split.nextDate.time,
+                        outTime = "00:00",
+                        offTime = "00:00",
+                        outMinutes = 0,
+                        takeoffDay = 0,
+                        takeoffNight = 0
+                    )
+                    map.getOrPut(split.nextYearKey) { mutableListOf() }.add(nextLog)
+                    if (!epochMap.containsKey(split.nextYearKey)) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            time = split.nextDate
+                            set(java.util.Calendar.MONTH, 0)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                            set(java.util.Calendar.HOUR_OF_DAY, 0)
+                            set(java.util.Calendar.MINUTE, 0)
+                            set(java.util.Calendar.SECOND, 0)
+                            set(java.util.Calendar.MILLISECOND, 0)
+                        }
+                        epochMap[split.nextYearKey] = cal.timeInMillis
+                    }
+                } else {
+                    val d = parseLogDate(log.date)
+                    val key = if (d != null) yearFormat.format(d) else "Unspecified Year"
+                    map.getOrPut(key) { mutableListOf() }.add(log)
+                    if (d != null && !epochMap.containsKey(key)) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            time = d
+                            set(java.util.Calendar.MONTH, 0)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                            set(java.util.Calendar.HOUR_OF_DAY, 0)
+                            set(java.util.Calendar.MINUTE, 0)
+                            set(java.util.Calendar.SECOND, 0)
+                            set(java.util.Calendar.MILLISECOND, 0)
+                        }
+                        epochMap[key] = cal.timeInMillis
+                    }
                 }
             }
 
@@ -535,11 +737,12 @@ fun LogbookTabContent(
                 var tMin = 0
                 var tProMin = 0
                 logsList.forEach { log ->
-                    val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                        ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+                    val blockMin = log.splitMinutes
+                        ?: calculateTimeDiffInMinutes(log.outTime, log.inTime)
+                        ?: calculateTimeDiffInMinutes(log.offTime, log.onTime)
+                        ?: parseBlockMinutesFromLog(log.blockHours)
                         ?: 0
-                    val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                    val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+                    val crewCount = getCrewCount(log.crew)
                     val proMin = calculateProratedMinutes(blockMin, crewCount)
                     tMin += blockMin
                     tProMin += proMin
@@ -557,10 +760,17 @@ fun LogbookTabContent(
                         fProMin += proMin
                     }
                 }
+                val sortedList = logsList.sortedWith { l1, l2 ->
+                    if (sortRecentFirst) {
+                        compareFlightLogsRecentToOld(l1, l2)
+                    } else {
+                        compareFlightLogsRecentToOld(l2, l1)
+                    }
+                }
                 FlightLogGroup(
                     groupKey = key,
                     groupSortEpoch = epochMap[key] ?: 0L,
-                    logs = logsList,
+                    logs = sortedList,
                     totalMin = tMin,
                     proratedTotalMin = tProMin,
                     picMin = pMin,
@@ -585,11 +795,65 @@ fun LogbookTabContent(
     val isNavigableGroupView = viewBy.equals("Month", ignoreCase = true) || viewBy.equals("Year", ignoreCase = true)
     val isYear = viewBy.equals("Year", ignoreCase = true)
 
+    // Manage active group index locally with immediate state update to prevent recomposition latency
+    var localActiveGroupIndex by remember { mutableIntStateOf(activeGroupIndex) }
+
+    LaunchedEffect(activeGroupIndex) {
+        if (localActiveGroupIndex != activeGroupIndex) {
+            localActiveGroupIndex = activeGroupIndex
+        }
+    }
+
+    // Anchor flight log ID: the ID of the record currently visible at the top of the view list
+    var stableAnchorLogId by remember { mutableStateOf<Int?>(null) }
+    var targetScrollLogId by remember { mutableStateOf<Int?>(null) }
+    var previousViewBy by remember { mutableStateOf(viewBy) }
+    var previousSortRecentFirst by remember { mutableStateOf(sortRecentFirst) }
+
+    // When viewBy ("All Records", "Month", "Year") or sortRecentFirst (Recent to Last / First to Last) changes:
+    // Seamlessly transition the view to show the flight record currently on top of the view list!
+    val viewChanged = !viewBy.equals(previousViewBy, ignoreCase = true)
+    val sortChanged = (sortRecentFirst != previousSortRecentFirst)
+
+    if (viewChanged || sortChanged) {
+        val anchorId = stableAnchorLogId
+        previousViewBy = viewBy
+        previousSortRecentFirst = sortRecentFirst
+
+        if (anchorId != null) {
+            targetScrollLogId = anchorId
+            if (isNavigableGroupView && groupedLogs.isNotEmpty()) {
+                val groupIdx = groupedLogs.indexOfFirst { g ->
+                    g.logs.any { it.id == anchorId }
+                }
+                if (groupIdx >= 0) {
+                    localActiveGroupIndex = groupIdx
+                }
+            }
+        }
+    }
+
     // Adjust active index if out of bounds
     val safeGroupIndex = if (groupedLogs.isNotEmpty()) {
-        activeGroupIndex.coerceIn(0, groupedLogs.size - 1)
+        localActiveGroupIndex.coerceIn(0, groupedLogs.size - 1)
     } else {
         0
+    }
+
+    var previousNavGroupIndex by remember { mutableIntStateOf(safeGroupIndex) }
+
+    // Synchronize active group index back to parent when transition takes place
+    SideEffect {
+        if (viewChanged || sortChanged) {
+            onActiveGroupIndexChange(safeGroupIndex)
+            previousNavGroupIndex = safeGroupIndex
+        }
+    }
+
+    val setGroupIndex: (Int) -> Unit = { newIdx ->
+        val safe = if (groupedLogs.isNotEmpty()) newIdx.coerceIn(0, groupedLogs.size - 1) else 0
+        localActiveGroupIndex = safe
+        onActiveGroupIndexChange(safe)
     }
 
     val currentGroup = if (isNavigableGroupView && groupedLogs.isNotEmpty()) {
@@ -598,11 +862,67 @@ fun LogbookTabContent(
         null
     }
 
-    // Summary calculations for records selected/displayed on page (reflects active period when View By is active)
-    val activeLogsForStats = if (isNavigableGroupView && currentGroup != null) {
-        currentGroup.logs
+    val displayedLogs = if (isNavigableGroupView) {
+        currentGroup?.logs ?: emptyList()
     } else {
         filteredLogs
+    }
+
+    // Summary calculations for records selected/displayed on page (reflects active period when View By is active)
+    val activeLogsForStats = displayedLogs
+
+    // Continuously keep stableAnchorLogId synchronized with the top visible item in the viewport during normal scrolling
+    LaunchedEffect(scrollState, displayedLogs) {
+        snapshotFlow {
+            scrollState.firstVisibleItemIndex
+        }.collect { firstIdx ->
+            if (targetScrollLogId == null) {
+                val log = displayedLogs.getOrNull(firstIdx) ?: displayedLogs.firstOrNull()
+                if (log != null) {
+                    stableAnchorLogId = log.id
+                }
+            }
+        }
+    }
+
+    // Ensure stableAnchorLogId is initialized when displayedLogs is populated
+    LaunchedEffect(displayedLogs) {
+        if (targetScrollLogId == null && stableAnchorLogId == null) {
+            val log = displayedLogs.getOrNull(scrollState.firstVisibleItemIndex) ?: displayedLogs.firstOrNull()
+            if (log != null) {
+                stableAnchorLogId = log.id
+            }
+        }
+    }
+
+    // When the user explicitly changes period using navigation controls (< / > / dropdown), reset scroll to top of that period
+    LaunchedEffect(safeGroupIndex) {
+        if (safeGroupIndex != previousNavGroupIndex) {
+            val isManualNav = (targetScrollLogId == null)
+            previousNavGroupIndex = safeGroupIndex
+            if (isManualNav) {
+                scrollState.scrollToItem(0)
+                displayedLogs.firstOrNull()?.id?.let { stableAnchorLogId = it }
+            }
+        }
+    }
+
+    // Scroll directly to the target flight record once displayedLogs is ready
+    LaunchedEffect(targetScrollLogId, displayedLogs) {
+        val targetId = targetScrollLogId ?: return@LaunchedEffect
+        val targetIdx = displayedLogs.indexOfFirst { it.id == targetId }
+        if (targetIdx >= 0) {
+            scrollState.scrollToItem(targetIdx)
+            kotlinx.coroutines.delay(25)
+            if (scrollState.firstVisibleItemIndex != targetIdx) {
+                scrollState.scrollToItem(targetIdx)
+            }
+            stableAnchorLogId = targetId
+            targetScrollLogId = null
+        } else if (displayedLogs.isNotEmpty() && filteredLogs.none { it.id == targetId }) {
+            // Target log no longer exists in dataset
+            targetScrollLogId = null
+        }
     }
 
     val summaryStats = remember(activeLogsForStats) {
@@ -615,11 +935,12 @@ fun LogbookTabContent(
         var totalMin = 0
         var totalProMin = 0
         activeLogsForStats.forEach { log ->
-            val blockMin = calculateTimeDiffInMinutes(log.outTime, log.inTime)
-                ?: (log.blockHours.toDoubleOrNull()?.let { (it * 60).toInt() })
+            val blockMin = log.splitMinutes
+                ?: calculateTimeDiffInMinutes(log.outTime, log.inTime)
+                ?: calculateTimeDiffInMinutes(log.offTime, log.onTime)
+                ?: parseBlockMinutesFromLog(log.blockHours)
                 ?: 0
-            val crewList = log.crew.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            val crewCount = if (crewList.isEmpty()) 2 else crewList.size
+            val crewCount = getCrewCount(log.crew)
             val proMin = calculateProratedMinutes(blockMin, crewCount)
             totalMin += blockMin
             totalProMin += proMin
@@ -749,13 +1070,13 @@ fun LogbookTabContent(
                                 fontSize = 10.sp
                             )
                             Text(
-                                text = String.format(Locale.US, "%d:%02d", totalPicMin / 60, totalPicMin % 60),
+                                text = formatMinutesToHoursClean(totalPicMin),
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = Color(0xFF34D399),
                                 fontSize = 14.sp
                             )
                             Text(
-                                text = "Pro: " + String.format(Locale.US, "%d:%02d", totalPicProMin / 60, totalPicProMin % 60),
+                                text = "Pro: " + formatMinutesToHoursClean(totalPicProMin),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFF34D399).copy(alpha = 0.8f)
@@ -782,13 +1103,13 @@ fun LogbookTabContent(
                                 fontSize = 10.sp
                             )
                             Text(
-                                text = String.format(Locale.US, "%d:%02d", totalSicMin / 60, totalSicMin % 60),
+                                text = formatMinutesToHoursClean(totalSicMin),
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = Color(0xFF60A5FA),
                                 fontSize = 14.sp
                             )
                             Text(
-                                text = "Pro: " + String.format(Locale.US, "%d:%02d", totalSicProMin / 60, totalSicProMin % 60),
+                                text = "Pro: " + formatMinutesToHoursClean(totalSicProMin),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFF60A5FA).copy(alpha = 0.8f)
@@ -800,9 +1121,9 @@ fun LogbookTabContent(
                             // Divider
                             Box(
                                 modifier = Modifier
-                                    .width(1.dp)
-                                    .height(34.dp)
-                                    .background(Color.White.copy(alpha = 0.1f))
+                                .width(1.dp)
+                                .height(34.dp)
+                                .background(Color.White.copy(alpha = 0.1f))
                             )
 
                             Column(
@@ -816,13 +1137,13 @@ fun LogbookTabContent(
                                     fontSize = 10.sp
                                 )
                                 Text(
-                                    text = String.format(Locale.US, "%d:%02d", totalFiMin / 60, totalFiMin % 60),
+                                    text = formatMinutesToHoursClean(totalFiMin),
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = Color(0xFFF59E0B),
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = "Pro: " + String.format(Locale.US, "%d:%02d", totalFiProMin / 60, totalFiProMin % 60),
+                                    text = "Pro: " + formatMinutesToHoursClean(totalFiProMin),
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = Color(0xFFF59E0B).copy(alpha = 0.8f)
@@ -850,13 +1171,13 @@ fun LogbookTabContent(
                                 fontSize = 10.sp
                             )
                             Text(
-                                text = String.format(Locale.US, "%d:%02d", totalBlockMin / 60, totalBlockMin % 60),
+                                text = formatMinutesToHoursClean(totalBlockMin),
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = Color.White,
                                 fontSize = 14.sp
                             )
                             Text(
-                                text = "Pro: " + String.format(Locale.US, "%d:%02d", totalProMin / 60, totalProMin % 60),
+                                text = "Pro: " + formatMinutesToHoursClean(totalProMin),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFFFFB300)
@@ -915,7 +1236,10 @@ fun LogbookTabContent(
                             modifier = Modifier
                                 .testTag("logbook_view_by_${option.lowercase().replace(" ", "_")}")
                                 .clickable {
-                                    onActiveGroupIndexChange(0)
+                                    val topId = displayedLogs.getOrNull(scrollState.firstVisibleItemIndex)?.id ?: displayedLogs.firstOrNull()?.id
+                                    if (topId != null) {
+                                        stableAnchorLogId = topId
+                                    }
                                     onViewByChange(option)
                                 }
                         ) {
@@ -941,18 +1265,18 @@ fun LogbookTabContent(
                 isYear = isYear,
                 onPrevious = {
                     if (safeGroupIndex > 0) {
-                        onActiveGroupIndexChange(safeGroupIndex - 1)
+                        setGroupIndex(safeGroupIndex - 1)
                     }
                 },
                 onNext = {
                     if (safeGroupIndex < groupedLogs.size - 1) {
-                        onActiveGroupIndexChange(safeGroupIndex + 1)
+                        setGroupIndex(safeGroupIndex + 1)
                     }
                 },
                 hasPrevious = safeGroupIndex > 0,
                 hasNext = safeGroupIndex < groupedLogs.size - 1,
                 onSelectGroupIndex = { idx ->
-                    onActiveGroupIndexChange(idx)
+                    setGroupIndex(idx)
                 },
                 allGroupKeys = groupedLogs.map { it.groupKey }
             )
@@ -1024,7 +1348,13 @@ fun LogbookTabContent(
                             color = if (sortRecentFirst) Color(0xFFFFB300) else Color.Transparent,
                             modifier = Modifier
                                 .weight(1f)
-                                .clickable { onSortRecentFirstChange(true) }
+                                .clickable {
+                                    val topId = displayedLogs.getOrNull(scrollState.firstVisibleItemIndex)?.id ?: displayedLogs.firstOrNull()?.id
+                                    if (topId != null) {
+                                        stableAnchorLogId = topId
+                                    }
+                                    onSortRecentFirstChange(true)
+                                }
                         ) {
                             Text(
                                 text = "Newest First",
@@ -1041,7 +1371,13 @@ fun LogbookTabContent(
                             color = if (!sortRecentFirst) Color(0xFFFFB300) else Color.Transparent,
                             modifier = Modifier
                                 .weight(1f)
-                                .clickable { onSortRecentFirstChange(false) }
+                                .clickable {
+                                    val topId = displayedLogs.getOrNull(scrollState.firstVisibleItemIndex)?.id ?: displayedLogs.firstOrNull()?.id
+                                    if (topId != null) {
+                                        stableAnchorLogId = topId
+                                    }
+                                    onSortRecentFirstChange(false)
+                                }
                         ) {
                             Text(
                                 text = "Oldest First",
@@ -1089,6 +1425,28 @@ fun LogbookTabContent(
                         placeholder = "All Aircraft Types"
                     )
 
+                    // Crew Member Dropdown Filter (Multi-select)
+                    val uniqueCrews = remember(allLogs) {
+                        allLogs.flatMap { log ->
+                            val (crewPart, traineePart) = parseCrewAndTrainee(log.crew)
+                            val crewMembers = crewPart.split(",").map { it.trim() }
+                            if (traineePart.isNotBlank()) crewMembers + traineePart else crewMembers
+                        }.filter { it.isNotBlank() && it != "-" && !it.equals("Self", ignoreCase = true) }
+                        .distinct()
+                        .sorted()
+                    }
+                    if (uniqueCrews.isNotEmpty()) {
+                        MultiSelectDropdown(
+                            label = "Crew Member",
+                            options = uniqueCrews,
+                            selectedOptions = selectedCrews,
+                            onSelectionChange = onSelectedCrewsChange,
+                            placeholder = "All Crew Members"
+                        )
+                    }
+
+
+
                     // Period Dropdown Filter (Multi-select)
                     val periodOptions = listOf("Last Week", "Last Month", "Last Year", "Custom")
                     MultiSelectDropdown(
@@ -1101,98 +1459,311 @@ fun LogbookTabContent(
 
                     // Custom Date Pickers (Shown if "Custom" is selected in Period dropdown)
                     if (selectedPeriods.contains("Custom")) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF161F2E), RoundedCornerShape(10.dp))
+                                .border(1.dp, Color(0xFFFFB300).copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // Quick Select Strip for "Front Start" and "To End"
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
-                                    text = "FROM DATE",
-                                    color = Color.White.copy(alpha = 0.5f),
+                                    text = "CUSTOM DATE RANGE",
+                                    color = Color(0xFFFFB300),
                                     fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.5.sp
                                 )
+                                // Full Span (Front to End) chip
                                 Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(44.dp)
-                                        .background(Color(0xFF111827), shape = RoundedCornerShape(8.dp))
-                                        .border(1.dp, Color.White.copy(alpha = 0.15f), shape = RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            showStartDatePicker = true
-                                        }
-                                        .padding(horizontal = 12.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = customStartDate?.let { logbookDateFormatter.format(it) } ?: "Pick Date",
-                                            color = if (customStartDate == null) Color.White.copy(alpha = 0.4f) else Color.White,
-                                            fontSize = 13.sp
+                                        .background(
+                                            if (isFrontStartSelected && isToEndSelected) Color(0xFF6366F1).copy(alpha = 0.25f) else Color.White.copy(alpha = 0.05f),
+                                            RoundedCornerShape(6.dp)
                                         )
-                                        if (customStartDate != null) {
-                                            IconButton(
-                                                onClick = { onCustomStartDateChange(null) },
-                                                modifier = Modifier.size(24.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Close,
-                                                    contentDescription = "Clear",
-                                                    tint = Color.White.copy(alpha = 0.6f),
-                                                    modifier = Modifier.size(14.dp)
-                                                )
+                                        .border(
+                                            1.dp,
+                                            if (isFrontStartSelected && isToEndSelected) Color(0xFF818CF8) else Color.White.copy(alpha = 0.12f),
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .clickable {
+                                            if (earliestRecordDate != null && latestRecordDate != null) {
+                                                onCustomStartDateChange(earliestRecordDate)
+                                                onCustomEndDateChange(latestRecordDate)
+                                            } else {
+                                                Toast.makeText(context, "No flight records found", Toast.LENGTH_SHORT).show()
                                             }
                                         }
-                                    }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        .testTag("custom_date_full_span_chip"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Front to End",
+                                        color = if (isFrontStartSelected && isToEndSelected) Color(0xFF818CF8) else Color.White.copy(alpha = 0.7f),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
 
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "TO DATE",
-                                    color = Color.White.copy(alpha = 0.5f),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(44.dp)
-                                        .background(Color(0xFF111827), shape = RoundedCornerShape(8.dp))
-                                        .border(1.dp, Color.White.copy(alpha = 0.15f), shape = RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            showEndDatePicker = true
-                                        }
-                                        .padding(horizontal = 12.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // FROM DATE column with dedicated "Front Start" option
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = customEndDate?.let { logbookDateFormatter.format(it) } ?: "Pick Date",
-                                            color = if (customEndDate == null) Color.White.copy(alpha = 0.4f) else Color.White,
-                                            fontSize = 13.sp
+                                            text = "FROM DATE",
+                                            color = Color.White.copy(alpha = 0.6f),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
                                         )
-                                        if (customEndDate != null) {
-                                            IconButton(
-                                                onClick = { onCustomEndDateChange(null) },
-                                                modifier = Modifier.size(24.dp)
-                                            ) {
+                                        // Quick clickable "Front Start" button
+                                        Text(
+                                            text = if (isFrontStartSelected) "✓ Front Start" else "Front Start",
+                                            color = if (isFrontStartSelected) Color(0xFFFFB300) else Color(0xFFFFB300).copy(alpha = 0.85f),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier
+                                                .clickable {
+                                                    if (earliestRecordDate != null) {
+                                                        onCustomStartDateChange(earliestRecordDate)
+                                                    } else {
+                                                        Toast.makeText(context, "No flight records found", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                                .padding(horizontal = 2.dp, vertical = 2.dp)
+                                                .testTag("quick_front_start_btn")
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .background(Color(0xFF111827), shape = RoundedCornerShape(8.dp))
+                                            .border(
+                                                1.dp,
+                                                if (isFrontStartSelected) Color(0xFFFFB300).copy(alpha = 0.7f) else Color.White.copy(alpha = 0.15f),
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable {
+                                                showStartDatePicker = true
+                                            }
+                                            .padding(horizontal = 12.dp)
+                                            .testTag("custom_start_date_box"),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                                 Icon(
-                                                    imageVector = Icons.Default.Close,
-                                                    contentDescription = "Clear",
-                                                    tint = Color.White.copy(alpha = 0.6f),
-                                                    modifier = Modifier.size(14.dp)
+                                                    imageVector = Icons.Default.CalendarToday,
+                                                    contentDescription = null,
+                                                    tint = if (isFrontStartSelected) Color(0xFFFFB300) else Color.White.copy(alpha = 0.4f),
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Text(
+                                                    text = customStartDate?.let { logbookDateFormatter.format(it) } ?: "Pick Date",
+                                                    color = if (customStartDate == null) Color.White.copy(alpha = 0.4f) else Color.White,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = if (customStartDate != null) FontWeight.SemiBold else FontWeight.Normal
                                                 )
                                             }
+                                            if (customStartDate != null) {
+                                                IconButton(
+                                                    onClick = { onCustomStartDateChange(null) },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Close,
+                                                        contentDescription = "Clear",
+                                                        tint = Color.White.copy(alpha = 0.6f),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                }
+                                            }
                                         }
+                                    }
+                                    // Dedicated quick chip for Front Start
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(
+                                                if (isFrontStartSelected) Color(0xFFFFB300).copy(alpha = 0.15f) else Color(0xFF1F2937),
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                            .border(
+                                                1.dp,
+                                                if (isFrontStartSelected) Color(0xFFFFB300) else Color.White.copy(alpha = 0.1f),
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                            .clickable {
+                                                if (earliestRecordDate != null) {
+                                                    onCustomStartDateChange(earliestRecordDate)
+                                                } else {
+                                                    Toast.makeText(context, "No flight records found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                                            .testTag("front_start_chip"),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.FirstPage,
+                                            contentDescription = "Front Start",
+                                            tint = if (isFrontStartSelected) Color(0xFFFFB300) else Color.White.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (earliestRecordDate != null) "Front Start (${logbookDateFormatter.format(earliestRecordDate)})" else "Front Start",
+                                            color = if (isFrontStartSelected) Color(0xFFFFB300) else Color.White.copy(alpha = 0.85f),
+                                            fontSize = 10.sp,
+                                            fontWeight = if (isFrontStartSelected) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                // TO DATE column with dedicated "To End" option
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "TO DATE",
+                                            color = Color.White.copy(alpha = 0.6f),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        // Quick clickable "To End" button
+                                        Text(
+                                            text = if (isToEndSelected) "✓ To End" else "To End",
+                                            color = if (isToEndSelected) Color(0xFF3CD070) else Color(0xFF3CD070).copy(alpha = 0.85f),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier
+                                                .clickable {
+                                                    if (latestRecordDate != null) {
+                                                        onCustomEndDateChange(latestRecordDate)
+                                                    } else {
+                                                        Toast.makeText(context, "No flight records found", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                                .padding(horizontal = 2.dp, vertical = 2.dp)
+                                                .testTag("quick_to_end_btn")
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .background(Color(0xFF111827), shape = RoundedCornerShape(8.dp))
+                                            .border(
+                                                1.dp,
+                                                if (isToEndSelected) Color(0xFF3CD070).copy(alpha = 0.7f) else Color.White.copy(alpha = 0.15f),
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable {
+                                                showEndDatePicker = true
+                                            }
+                                            .padding(horizontal = 12.dp)
+                                            .testTag("custom_end_date_box"),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Icon(
+                                                    imageVector = Icons.Default.CalendarToday,
+                                                    contentDescription = null,
+                                                    tint = if (isToEndSelected) Color(0xFF3CD070) else Color.White.copy(alpha = 0.4f),
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Text(
+                                                    text = customEndDate?.let { logbookDateFormatter.format(it) } ?: "Pick Date",
+                                                    color = if (customEndDate == null) Color.White.copy(alpha = 0.4f) else Color.White,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = if (customEndDate != null) FontWeight.SemiBold else FontWeight.Normal
+                                                )
+                                            }
+                                            if (customEndDate != null) {
+                                                IconButton(
+                                                    onClick = { onCustomEndDateChange(null) },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Close,
+                                                        contentDescription = "Clear",
+                                                        tint = Color.White.copy(alpha = 0.6f),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Dedicated quick chip for To End
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(
+                                                if (isToEndSelected) Color(0xFF3CD070).copy(alpha = 0.15f) else Color(0xFF1F2937),
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                            .border(
+                                                1.dp,
+                                                if (isToEndSelected) Color(0xFF3CD070) else Color.White.copy(alpha = 0.1f),
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                            .clickable {
+                                                if (latestRecordDate != null) {
+                                                    onCustomEndDateChange(latestRecordDate)
+                                                } else {
+                                                    Toast.makeText(context, "No flight records found", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                                            .testTag("to_end_chip"),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.LastPage,
+                                            contentDescription = "To End",
+                                            tint = if (isToEndSelected) Color(0xFF3CD070) else Color.White.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (latestRecordDate != null) "To End (${logbookDateFormatter.format(latestRecordDate)})" else "To End",
+                                            color = if (isToEndSelected) Color(0xFF3CD070) else Color.White.copy(alpha = 0.85f),
+                                            fontSize = 10.sp,
+                                            fontWeight = if (isToEndSelected) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }
@@ -1200,7 +1771,7 @@ fun LogbookTabContent(
 
                         if (showStartDatePicker) {
                             CosmicDatePickerDialog(
-                                initialDate = customStartDate ?: java.util.Date(),
+                                initialDate = customStartDate ?: earliestRecordDate ?: java.util.Date(),
                                 onDateSelected = { date ->
                                     onCustomStartDateChange(date)
                                     showStartDatePicker = false
@@ -1211,7 +1782,7 @@ fun LogbookTabContent(
 
                         if (showEndDatePicker) {
                             CosmicDatePickerDialog(
-                                initialDate = customEndDate ?: java.util.Date(),
+                                initialDate = customEndDate ?: latestRecordDate ?: java.util.Date(),
                                 onDateSelected = { date ->
                                     onCustomEndDateChange(date)
                                     showEndDatePicker = false
@@ -1274,11 +1845,7 @@ fun LogbookTabContent(
             }
         }
 
-        val displayedLogs = if (isNavigableGroupView) {
-            currentGroup?.logs ?: emptyList()
-        } else {
-            filteredLogs
-        }
+
 
         if (displayedLogs.isEmpty()) {
             Box(
@@ -1337,12 +1904,12 @@ fun LogbookTabContent(
                                     if (totalDragOffset > 80f) {
                                         // Swiped Right -> Go to Previous Period
                                         if (safeGroupIndex > 0) {
-                                            onActiveGroupIndexChange(safeGroupIndex - 1)
+                                            setGroupIndex(safeGroupIndex - 1)
                                         }
                                     } else if (totalDragOffset < -80f) {
                                         // Swiped Left -> Go to Next Period
                                         if (safeGroupIndex < groupedLogs.size - 1) {
-                                            onActiveGroupIndexChange(safeGroupIndex + 1)
+                                            setGroupIndex(safeGroupIndex + 1)
                                         }
                                     }
                                     totalDragOffset = 0f
@@ -1358,7 +1925,11 @@ fun LogbookTabContent(
                     },
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(displayedLogs, key = { it.id }) { log ->
+                items(
+                    items = displayedLogs,
+                    key = { "${it.id}_${it.splitPart ?: 0}" },
+                    contentType = { "flight_log_card" }
+                ) { log ->
                     FlightLogCard(
                         log = log,
                         onDelete = { onDeleteRequest(log) },
@@ -1366,7 +1937,8 @@ fun LogbookTabContent(
                         onNext = { onNext(log) },
                         onReturn = { onReturn(log) },
                         onDuplicate = { onDuplicate(log) },
-                        dbAirports = dbAirports
+                        dbAirports = dbAirports,
+                        filterCriteriaText = activeFilterCriteriaText
                     )
                 }
             }

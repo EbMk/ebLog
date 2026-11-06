@@ -48,6 +48,7 @@ data class TeamPost(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+@androidx.compose.runtime.Immutable
 @Entity(
     tableName = "airports",
     indices = [Index(value = ["icao"]), Index(value = ["country"]), Index(value = ["city"])]
@@ -67,6 +68,7 @@ data class Airport(
     val category: String = "Cat A"
 )
 
+@androidx.compose.runtime.Immutable
 @Entity(
     tableName = "aircrafts",
     indices = [Index(value = ["reg"]), Index(value = ["type"])]
@@ -76,6 +78,7 @@ data class Aircraft(
     val type: String
 )
 
+@androidx.compose.runtime.Immutable
 @Entity(
     tableName = "aircraft_types",
     indices = [Index(value = ["code"])]
@@ -88,6 +91,7 @@ data class AircraftType(
     val engineType: String = "Turbo Jet"
 )
 
+@androidx.compose.runtime.Immutable
 @Entity(tableName = "user_profile_settings")
 data class UserProfileSettings(
     @PrimaryKey val id: Int = 0,
@@ -137,7 +141,8 @@ data class UserProfileSettings(
                         id = obj.optInt("id", 0),
                         aircraftType = obj.optString("aircraftType", ""),
                         pilotRole = obj.optString("pilotRole", ""),
-                        totalHours = obj.optDouble("totalHours", 0.0)
+                        totalHours = obj.optDouble("totalHours", 0.0),
+                        isSim = obj.optBoolean("isSim", false)
                     )
                 )
             }
@@ -153,7 +158,8 @@ data class PreviousExperience(
     val id: Int = 0,
     val aircraftType: String,
     val pilotRole: String,
-    val totalHours: Double
+    val totalHours: Double,
+    val isSim: Boolean = false
 )
 
 // --- DAOs ---
@@ -175,8 +181,14 @@ interface AircraftDao {
     @Query("SELECT * FROM aircrafts ORDER BY reg ASC")
     fun getAllAircrafts(): Flow<List<Aircraft>>
 
+    @Query("SELECT * FROM aircrafts ORDER BY reg ASC")
+    suspend fun getAllAircraftsList(): List<Aircraft>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAircraft(aircraft: Aircraft)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAircrafts(aircrafts: List<Aircraft>)
 
     @Query("DELETE FROM aircrafts WHERE reg = :reg")
     suspend fun deleteAircraft(reg: String)
@@ -190,8 +202,14 @@ interface AirportDao {
     @Query("SELECT * FROM airports ORDER BY icao ASC")
     fun getAllAirports(): Flow<List<Airport>>
 
+    @Query("SELECT * FROM airports ORDER BY icao ASC")
+    suspend fun getAllAirportsList(): List<Airport>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAirport(airport: Airport)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAirports(airports: List<Airport>)
 
     @Query("DELETE FROM airports WHERE icao = :icao")
     suspend fun deleteAirport(icao: String)
@@ -205,8 +223,14 @@ interface AircraftTypeDao {
     @Query("SELECT * FROM aircraft_types ORDER BY code ASC")
     fun getAllAircraftTypes(): Flow<List<AircraftType>>
 
+    @Query("SELECT * FROM aircraft_types ORDER BY code ASC")
+    suspend fun getAllAircraftTypesList(): List<AircraftType>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAircraftType(aircraftType: AircraftType)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAircraftTypes(types: List<AircraftType>)
 
     @Query("DELETE FROM aircraft_types WHERE code = :code")
     suspend fun deleteAircraftType(code: String)
@@ -220,8 +244,14 @@ interface NoteDao {
     @Query("SELECT * FROM eblog_notes ORDER BY timestamp DESC")
     fun getAllNotes(): Flow<List<EbLogNote>>
 
+    @Query("SELECT * FROM eblog_notes ORDER BY id ASC")
+    suspend fun getAllNotesList(): List<EbLogNote>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNote(note: EbLogNote)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertNotes(notes: List<EbLogNote>)
 
     @Query("DELETE FROM eblog_notes WHERE id = :id")
     suspend fun deleteNote(id: Int)

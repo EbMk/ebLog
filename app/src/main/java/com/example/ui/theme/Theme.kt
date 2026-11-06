@@ -12,6 +12,11 @@ import androidx.compose.ui.platform.LocalContext
 
 import androidx.compose.ui.graphics.Color
 
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+
 private val DarkColorScheme =
   darkColorScheme(
     primary = CleanBlueContainer,
@@ -46,6 +51,7 @@ private val LightColorScheme =
 fun MyApplicationTheme(
   darkTheme: Boolean = isSystemInDarkTheme(),
   dynamicColor: Boolean = false,
+  uiScale: Float = 0.85f,
   content: @Composable () -> Unit,
 ) {
   val colorScheme =
@@ -59,5 +65,17 @@ fun MyApplicationTheme(
       else -> LightColorScheme
     }
 
-  MaterialTheme(colorScheme = colorScheme, typography = Typography, content = content)
+  val systemDensity = LocalDensity.current
+  val scaledDensity = remember(systemDensity, uiScale) {
+    Density(
+      density = systemDensity.density * uiScale,
+      fontScale = systemDensity.fontScale
+    )
+  }
+
+  MaterialTheme(colorScheme = colorScheme, typography = Typography) {
+    CompositionLocalProvider(LocalDensity provides scaledDensity) {
+      content()
+    }
+  }
 }
